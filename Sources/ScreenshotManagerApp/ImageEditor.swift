@@ -161,7 +161,7 @@ final class ImageEditorState: ObservableObject {
         case .blur(let rect):
             applyBlur(rect: rect, baseImage: baseImage)
         case .loupe(let center, let radius, let zoom, let target):
-            drawLoupe(center: target, radius: radius, zoom: zoom, baseImage: baseImage)
+            drawLoupe(displayCenter: center, target: target, radius: radius, zoom: zoom, baseImage: baseImage)
         }
     }
 
@@ -238,36 +238,98 @@ final class ImageEditorState: ObservableObject {
 
     private func applyBlur(rect: CGRect, baseImage: NSImage) {
         guard let cgImage = baseImage.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return }
-        let ciImage = CIImage(cgImage: cgImage)
-        let blur = CIFilter.gaussianBlur()
-        blur.inputImage = ciImage
-        blur.radius = 8
-        guard let blurred = blur.outputImage else { return }
-        let context = CIContext(options: nil)
-        guard let blurredCG = context.createCGImage(blurred, from: ciImage.extent) else { return }
 
         let targetRect = rect.standardized
-        let cropped = NSImage(cgImage: blurredCG, size: baseImage.size)
-        cropped.draw(at: CGPoint.zero, from: targetRect, operation: .sourceOver, fraction: 1.0)
+
+        // Calculate the crop rect in image coordinates (accounting for image size vs view size)
+        let imageSize = baseImage.size
+        let scaleX = CGFloat(cgImage.width) / imageSize.width
+        let scaleY = CGFloat(cgImage.height) / imageSize.height
+
+        let cropRect = CGRect(
+            x: targetRect.origin.x * scaleX,
+            y: (imageSize.height - targetRect.origin.y - targetRect.height) * scaleY, // Flip Y for CGImage
+            width: targetRect.width * scaleX,
+            height: targetRect.height * scaleY
+        ).integral
+
+        // Crop the region to blur
+        guard let croppedCG = cgImage.cropping(to: cropRect) else { return }
+
+        // Apply blur only to the cropped region
+        let ciImage = CIImage(cgImage: croppedCG)
+        let blur = CIFilter.gaussianBlur()
+        blur.inputImage = ciImage
+        blur.radius = 10
+        guard let blurred = blur.outputImage else { return }
+
+        let context = CIContext(options: nil)
+        // Clamp the output to avoid edge artifacts from blur extending outside bounds
+        let clampedOutput = blurred.cropped(to: ciImage.extent)
+        guard let blurredCG = context.createCGImage(clampedOutput, from: ciImage.extent) else { return }
+
+        // Draw the blurred region back into the target rect
+        let blurredImage = NSImage(cgImage: blurredCG, size: targetRect.size)
+        blurredImage.draw(in: targetRect, from: NSRect(origin: .zero, size: targetRect.size), operation: .sourceOver, fraction: 1.0)
     }
 
-    private func drawLoupe(center: CGPoint, radius: CGFloat, zoom: CGFloat, baseImage: NSImage) {
+    private func drawLoupe(displayCenter: CGPoint, target: CGPoint, radius: CGFloat, zoom: CGFloat, baseImage: NSImage) {
         let diameter = radius * 2
+        // Source rect: what area of the image to zoom into (centered on target)
         let sourceRect = CGRect(
-            x: center.x - radius / zoom,
-            y: center.y - radius / zoom,
+            x: target.x - radius / zoom,
+            y: target.y - radius / zoom,
             width: diameter / zoom,
             height: diameter / zoom
         )
-        let destRect = CGRect(x: center.x - radius, y: center.y - radius, width: diameter, height: diameter)
+        // Dest rect: where to draw the loupe (centered on displayCenter)
+        let destRect = CGRect(x: displayCenter.x - radius, y: displayCenter.y - radius, width: diameter, height: diameter)
+
+        // Save graphics state to restore after clipping
+        NSGraphicsContext.current?.saveGraphicsState()
 
         let clipPath = NSBezierPath(ovalIn: destRect)
         clipPath.addClip()
         baseImage.draw(in: destRect, from: sourceRect, operation: .sourceOver, fraction: 1.0)
 
+        NSGraphicsContext.current?.restoreGraphicsState()
+
+        // Draw loupe border
         NSColor.white.setStroke()
         clipPath.lineWidth = 3
         clipPath.stroke()
+
+        // Draw arrow from loupe edge to target if moved away
+        let distance = hypot(displayCenter.x - target.x, displayCenter.y - target.y)
+        if distance > radius + 10 {
+            let angle = atan2(target.y - displayCenter.y, target.x - displayCenter.x)
+            let edgePoint = CGPoint(x: displayCenter.x + radius * cos(angle), y: displayCenter.y + radius * sin(angle))
+
+            // Draw line
+            let linePath = NSBezierPath()
+            linePath.move(to: edgePoint)
+            linePath.line(to: target)
+            linePath.lineWidth = 2
+            NSColor.systemBlue.setStroke()
+            linePath.stroke()
+
+            // Draw arrowhead
+            let arrowLength: CGFloat = 10
+            let arrowAngle: CGFloat = .pi / 6
+            let arrowPath = NSBezierPath()
+            arrowPath.move(to: target)
+            arrowPath.line(to: CGPoint(
+                x: target.x - arrowLength * cos(angle - arrowAngle),
+                y: target.y - arrowLength * sin(angle - arrowAngle)
+            ))
+            arrowPath.move(to: target)
+            arrowPath.line(to: CGPoint(
+                x: target.x - arrowLength * cos(angle + arrowAngle),
+                y: target.y - arrowLength * sin(angle + arrowAngle)
+            ))
+            arrowPath.lineWidth = 2
+            arrowPath.stroke()
+        }
     }
 
     private func smoothPoints(_ points: [CGPoint]) -> [CGPoint] {
@@ -379,6 +441,20 @@ struct ImageEditorView: View {
     @State private var activeLoupeID: UUID?
     @State private var loupeDragOffset: CGPoint = .zero
     @State private var loupeZoom: CGFloat = 2.8
+    
+    // Preset color palette
+    private let presetColors: [NSColor] = [
+        .systemRed,
+        .systemOrange,
+        .systemYellow,
+        .systemGreen,
+        .systemBlue,
+        .systemPurple,
+        .systemPink,
+        .black,
+        .white,
+        .systemGray
+    ]
 
     var body: some View {
         GeometryReader { proxy in
@@ -440,20 +516,35 @@ struct ImageEditorView: View {
                 }
             }
             HStack(spacing: 12) {
-                ColorPicker("", selection: Binding(get: {
-                    Color(editor.color)
-                }, set: { newValue in
-                    editor.color = NSColor(newValue)
-                }))
-                .labelsHidden()
+                // Simple color palette
+                HStack(spacing: 6) {
+                    ForEach(presetColors, id: \.self) { color in
+                        Button(action: {
+                            editor.color = color
+                        }) {
+                            Circle()
+                                .fill(Color(color))
+                                .frame(width: 24, height: 24)
+                                .overlay(
+                                    Circle()
+                                        .stroke(editor.color == color ? Color.accentColor : Color.clear, lineWidth: 2)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help(colorName(for: color))
+                    }
+                }
+                .padding(6)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 Slider(value: $editor.lineWidth, in: 2...12)
                     .frame(width: 120)
-                    .help("Line Width")
+                    .help("Line Width: \(Int(editor.lineWidth))pt")
 
                 if editor.tool == .text {
                     TextField("Text", text: $editor.textValue)
                         .frame(width: 180)
+                        .help("Enter text to add to image")
                 }
                 if editor.tool == .loupe {
                     Text("Zoom")
@@ -461,13 +552,15 @@ struct ImageEditorView: View {
                         .foregroundStyle(.secondary)
                     Slider(value: $loupeZoom, in: 2.0...5.0, step: 0.1)
                         .frame(width: 140)
-                        .help("Loupe Zoom")
+                        .help("Loupe Zoom: \(String(format: "%.1f", loupeZoom))x")
                 }
 
                 Spacer()
 
                 Button("Reset") { editor.reset() }
+                    .help("Remove all annotations and reset crop")
                 Button("Cancel") { onCancel() }
+                    .help("Discard changes and close editor")
                 Button("Save") {
                     guard let rendered = editor.renderImage() else { return }
                     onSave(rendered, editor.notes)
@@ -490,6 +583,22 @@ struct ImageEditorView: View {
             }
             .padding(8)
             .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        }
+    }
+    
+    private func colorName(for color: NSColor) -> String {
+        switch color {
+        case .systemRed: return "Red"
+        case .systemOrange: return "Orange"
+        case .systemYellow: return "Yellow"
+        case .systemGreen: return "Green"
+        case .systemBlue: return "Blue"
+        case .systemPurple: return "Purple"
+        case .systemPink: return "Pink"
+        case .black: return "Black"
+        case .white: return "White"
+        case .systemGray: return "Gray"
+        default: return "Color"
         }
     }
 

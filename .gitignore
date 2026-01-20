@@ -7,9 +7,7 @@ Screenshot Manager.app/
 .DS_Store
 *.xcodeproj/
 *.xcworkspace/# Swift Package Manager
-.swiftpm/
-
-# macOS
+.swiftpm/# macOS
 .DS_Store
 .AppleDouble
 .LSOverride

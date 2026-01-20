@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 // MARK: - Organization Data Models
 
@@ -20,6 +21,12 @@ struct ScreenshotMetadata: Codable, Identifiable {
         self.notes = notes
         self.createdAt = createdAt
     }
+}
+
+private struct MetadataExport: Codable {
+    let metadata: [String: ScreenshotMetadata]
+    let collections: [Collection]
+    let smartFolders: [SmartFolder]
 }
 
 struct Collection: Codable, Identifiable {
@@ -171,6 +178,93 @@ final class OrganizationModel: ObservableObject {
         meta.isFavorite.toggle()
         metadata[item.id] = meta
         saveMetadata()
+    }
+    
+    func batchToggleFavorites(_ items: [ScreenshotItem]) {
+        guard !items.isEmpty else { return }
+        
+        // Determine if we should set all to favorite or unfavorite
+        // Check current state
+        let anyNotFavorite = items.contains { !isFavorite($0) }
+        
+        // If any are not favorites, favorite all; otherwise unfavorite all
+        for item in items {
+            var meta = metadata(for: item)
+            meta.isFavorite = anyNotFavorite
+            metadata[item.id] = meta
+        }
+        saveMetadata()
+    }
+    
+    // MARK: - Export/Import
+    
+    func exportMetadata() -> URL? {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "screenshot-metadata-\(Date().ISO8601Format()).json"
+        panel.title = "Export Metadata"
+        
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return nil
+        }
+        
+        do {
+            let export = MetadataExport(
+                metadata: metadata.mapKeys { $0.absoluteString }, // Convert URL keys to String for Codable
+                collections: collections,
+                smartFolders: smartFolders
+            )
+            let data = try JSONEncoder().encode(export)
+            try data.write(to: url)
+            return url
+        } catch {
+            ErrorLogger.shared.log(error, context: "Failed to export metadata")
+            return nil
+        }
+    }
+    
+    func importMetadata() -> Bool {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.title = "Import Metadata"
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return false
+        }
+        
+        do {
+            let data = try Data(contentsOf: url)
+            let export = try JSONDecoder().decode(MetadataExport.self, from: data)
+            
+            // Merge imported data with existing
+            for (keyString, value) in export.metadata {
+                if let urlKey = URL(string: keyString) {
+                    metadata[urlKey] = value
+                }
+            }
+            
+            for newCollection in export.collections {
+                if !collections.contains(where: { $0.id == newCollection.id }) {
+                    collections.append(newCollection)
+                }
+            }
+            
+            for newSmartFolder in export.smartFolders {
+                if !smartFolders.contains(where: { $0.id == newSmartFolder.id }) {
+                    smartFolders.append(newSmartFolder)
+                }
+            }
+            
+            saveMetadata()
+            saveCollections()
+            saveSmartFolders()
+            return true
+        } catch {
+            ErrorLogger.shared.log(error, context: "Failed to import metadata")
+            return false
+        }
     }
     
     func isFavorite(_ item: ScreenshotItem) -> Bool {

@@ -25,6 +25,7 @@ final class ScreenshotLibrary: ObservableObject {
     @Published var activeSmartFolderID: UUID?
     @Published var activeTagFilter: String?
     @Published var showFavoritesOnly: Bool = false
+    @Published var searchQuery: String = ""
 
     init(settings: SettingsModel, organization: OrganizationModel) {
         self.settings = settings
@@ -117,7 +118,8 @@ final class ScreenshotLibrary: ObservableObject {
         .sorted { $0.createdAt > $1.createdAt }
 
         let filtered = applyDateFilter(to: candidates)
-        let deduped = showDuplicatesOnly ? filterDuplicates(in: filtered) : filtered
+        let searchFiltered = applySearchFilter(to: filtered)
+        let deduped = showDuplicatesOnly ? filterDuplicates(in: searchFiltered) : searchFiltered
         let nearDeduped = showNearDuplicatesOnly ? filterNearDuplicates(in: deduped) : deduped
         let selectedFiltered = showSelectedOnly ? filterSelected(in: nearDeduped) : nearDeduped
         let favoritesFiltered = showFavoritesOnly ? filterFavorites(in: selectedFiltered) : selectedFiltered
@@ -474,6 +476,33 @@ final class ScreenshotLibrary: ObservableObject {
     
     private func filterFavorites(in items: [ScreenshotItem]) -> [ScreenshotItem] {
         return items.filter { organization.isFavorite($0) }
+    }
+    
+    private func applySearchFilter(to items: [ScreenshotItem]) -> [ScreenshotItem] {
+        let query = searchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return items }
+        
+        let lowercasedQuery = query.lowercased()
+        return items.filter { item in
+            // Search in filename
+            if item.filename.lowercased().contains(lowercasedQuery) {
+                return true
+            }
+            
+            // Search in tags
+            let tags = organization.tags(for: item)
+            if tags.contains(where: { $0.lowercased().contains(lowercasedQuery) }) {
+                return true
+            }
+            
+            // Search in notes
+            if let notes = organization.metadata(for: item).notes,
+               notes.lowercased().contains(lowercasedQuery) {
+                return true
+            }
+            
+            return false
+        }
     }
     
     func setActiveCollection(_ collectionID: UUID?) {

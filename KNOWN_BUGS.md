@@ -2,17 +2,16 @@
 
 ## Active Bugs 🐛
 
-### 1. Loupe Tool - Drag Still Not Working Properly
-**Status**: ⚠️ Partially Fixed  
-**Priority**: High  
-**Description**: While the loupe tool improvements were made (separate target/center, arrow rendering), dragging existing loupes still doesn't work smoothly. Attempts were made to fix drag detection, but the issue persists.
+### 1. PDF Editor Text Input Focus Issue
+**Status**: Active
+**Priority**: Medium
 
-**Current Behavior**:
-- Loupe moves in very small increments when attempting to drag
-- Not smooth/continuous movement as expected
+**Description**: The text input field in the PDF Editor's right sidebar does not properly receive keyboard focus when clicked. Users may have difficulty typing text for text annotations.
+
+**Workaround**: Click directly in the text field multiple times, or tab into the field.
 
 **Related Files**:
-- `ImageEditor.swift` (lines 496-525, drag gesture handling)
+- `PDFEditorView.swift` (FocusableTextField, KeyEventHandlerView)
 
 ---
 
@@ -72,13 +71,14 @@ For a complete list of resolved issues, see:
 - `../brain/45b2afbd-71db-4b0f-a652-e8c4bf897d92/walkthrough.md`
 - `../brain/45b2afbd-71db-4b0f-a652-e8c4bf897d92/issues_summary.md`
 
-**Summary**: 8 of 10 identified issues have been resolved, including:
+**Summary**: 9 of 10 identified issues have been resolved, including:
 - Centralized error logging
 - Metadata storage data loss prevention
 - Video thumbnail race conditions
 - File descriptor leaks
 - Deprecated API usage
 - Core error handling throughout the app
+- Loupe tool drag functionality (ImageEditor)
 
 ---
 

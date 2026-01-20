@@ -7,6 +7,9 @@ struct LibraryView: View {
     @EnvironmentObject var settings: SettingsModel
     @EnvironmentObject var organization: OrganizationModel
     @State private var showDeleteConfirmation = false
+    @State private var showBatchCollectionPicker = false
+    @State private var showBatchTagEditor = false
+    @State private var showPDFEditor = false
     
     var body: some View {
         NavigationSplitView {
@@ -113,6 +116,59 @@ struct LibraryView: View {
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                 }
+                
+                // Batch operations menu
+                if multiple {
+                    Menu {
+                        Button {
+                            showBatchCollectionPicker = true
+                        } label: {
+                            Label("Add to Collection...", systemImage: "folder.badge.plus")
+                        }
+                        
+                        Button {
+                            showBatchTagEditor = true
+                        } label: {
+                            Label("Add Tags...", systemImage: "tag.fill")
+                        }
+                        
+                        Divider()
+                        
+                        Button {
+                            showPDFEditor = true
+                        } label: {
+                            Label("Create PDF...", systemImage: "doc.richtext")
+                        }
+                        
+                        Divider()
+                        
+                        Button {
+                            exportSelectedScreenshots()
+                        } label: {
+                            Label("Export Selected...", systemImage: "square.and.arrow.up")
+                        }
+                    } label: {
+                        Label("Batch Operations", systemImage: "rectangle.stack.badge.plus")
+                    }
+                    .help("Batch operations for selected items")
+                }
+            }
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Search...", text: $library.searchQuery)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 200)
+                    if !library.searchQuery.isEmpty {
+                        Button(action: { library.searchQuery = "" }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Clear search")
+                    }
+                }
             }
             ToolbarItem(placement: .automatic) {
                 Picker("Date range", selection: $settings.dateFilter) {
@@ -151,8 +207,34 @@ struct LibraryView: View {
         .onChange(of: settings.dateFilter) { _ in
             library.reload()
         }
+        .onChange(of: library.searchQuery) { _ in
+            library.reload()
+        }
         .onDeleteCommand {
             deleteSelected()
+        }
+        // Hidden buttons for keyboard shortcuts
+        .background(
+            VStack {
+                Button("") { library.selectAll() }.keyboardShortcut("a", modifiers: .command).hidden()
+                Button("") { library.deselectAll() }.keyboardShortcut("d", modifiers: .command).hidden()
+                Button("") { library.deselectAll() }.keyboardShortcut(.escape, modifiers: []).hidden()
+                Button("") { toggleFavoriteForSelected() }.keyboardShortcut("f", modifiers: .command).hidden()
+                Button("") { quickLookSelected() }.keyboardShortcut(.space, modifiers: []).hidden()
+            }
+        )
+        .sheet(isPresented: $showBatchCollectionPicker) {
+            BatchCollectionPickerSheet(items: library.selectedItems(), isPresented: $showBatchCollectionPicker)
+                .environmentObject(organization)
+        }
+        .sheet(isPresented: $showBatchTagEditor) {
+            BatchTagEditorSheet(items: library.selectedItems(), isPresented: $showBatchTagEditor)
+                .environmentObject(organization)
+        }
+        .onChange(of: showPDFEditor) { newValue in
+            if newValue {
+                showPDFEditorWindow(items: library.selectedItems())
+            }
         }
     }
 
@@ -165,6 +247,113 @@ struct LibraryView: View {
         let selected = library.selectedItems()
         guard !selected.isEmpty else { return }
         library.batchDelete(selected)
+    }
+    
+    private func toggleFavoriteForSelected() {
+        let selected = library.selectedItems()
+        guard !selected.isEmpty else { return }
+        organization.batchToggleFavorites(selected)
+        library.reload()
+    }
+    
+    private func quickLookSelected() {
+        guard let item = selectedItem else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([item.url])
+    }
+    
+    private func exportSelectedScreenshots() {
+        let selected = library.selectedItems()
+        guard !selected.isEmpty else { return }
+
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.title = "Export Screenshots"
+        panel.message = "Choose a folder to export \(selected.count) screenshots"
+
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+
+        var successCount = 0
+        var failedItems: [String] = []
+
+        for item in selected {
+            let destination = folder.appendingPathComponent(item.filename)
+            do {
+                // If file already exists, create unique name
+                var finalDestination = destination
+                var counter = 1
+                while FileManager.default.fileExists(atPath: finalDestination.path) {
+                    let name = destination.deletingPathExtension().lastPathComponent
+                    let ext = destination.pathExtension
+                    finalDestination = folder.appendingPathComponent("\(name)_\(counter).\(ext)")
+                    counter += 1
+                }
+                try FileManager.default.copyItem(at: item.url, to: finalDestination)
+                successCount += 1
+            } catch {
+                failedItems.append(item.filename)
+                print("Export failed for \(item.filename): \(error.localizedDescription)")
+            }
+        }
+
+        if !failedItems.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "Export Partially Complete"
+            alert.informativeText = "Exported \(successCount) of \(selected.count) screenshots.\n\nFailed items:\n\(failedItems.prefix(5).joined(separator: "\n"))\(failedItems.count > 5 ? "\n...and \(failedItems.count - 5) more" : "")"
+            alert.alertStyle = .warning
+            alert.runModal()
+        }
+
+        NSWorkspace.shared.activateFileViewerSelecting([folder])
+    }
+    
+    private func showPDFEditorWindow(items: [ScreenshotItem]) {
+        let contentView = PDFEditorView(items: items, isPresented: $showPDFEditor)
+            .environmentObject(organization)
+        
+        let hostingView = NSHostingView(rootView: contentView)
+        hostingView.frame = NSRect(x: 0, y: 0, width: 1600, height: 1000)
+        
+        let screenFrame = NSScreen.main?.frame ?? .zero
+        let windowRect = NSRect(
+            x: screenFrame.midX - 800,
+            y: screenFrame.midY - 500,
+            width: 1600,
+            height: 1000
+        )
+        
+        let window = PDFEditorWindowClass(
+            contentRect: windowRect,
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        
+        window.title = "PDF Editor"
+        window.contentView = hostingView
+        window.isReleasedWhenClosed = false
+        window.level = .floating  // Keep above main window to prevent focus stealing
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+        window.acceptsMouseMovedEvents = true
+
+        // Minimize the main window so it doesn't compete for focus
+        if let mainWindow = NSApp.windows.first(where: { $0.title != "PDF Editor" && $0.isVisible && $0.canBecomeMain }) {
+            mainWindow.miniaturize(nil)
+        }
+
+        // Make window key, main, and visible so it properly receives focus
+        window.makeKeyAndOrderFront(nil)
+        window.makeMain()
+        NSApp.activate(ignoringOtherApps: true)
+
+        window.onClose = {
+            showPDFEditor = false
+            // Restore the main window when PDF editor closes
+            for win in NSApp.windows where win.isMiniaturized && win.title != "PDF Editor" {
+                win.deminiaturize(nil)
+            }
+        }
     }
 }
 
@@ -243,7 +432,8 @@ private struct TimelineGridView: View {
                                     isSelected: item.id == library.selectedID,
                                     isMultiSelected: library.selectedIDs.contains(item.id),
                                     isDuplicate: library.isDuplicate(item),
-                                    isNearDuplicate: library.isNearDuplicate(item)
+                                    isNearDuplicate: library.isNearDuplicate(item),
+                                    organization: organization
                                 )
                                     .onTapGesture {
                                         handleTap(item: item)
@@ -266,13 +456,15 @@ private struct TimelineGridView: View {
                                         Divider()
                                         // Organization options
                                         Button(action: {
-                                            organization.toggleFavorite(item)
+                                            let selectedItems = library.selectedItems()
+                                            if selectedItems.count > 1 && selectedItems.contains(where: { $0.id == item.id }) {
+                                                organization.batchToggleFavorites(selectedItems)
+                                            } else {
+                                                organization.toggleFavorite(item)
+                                            }
                                             library.reload()
                                         }) {
-                                            Label(
-                                                organization.isFavorite(item) ? "Remove from Favorites" : "Add to Favorites",
-                                                systemImage: organization.isFavorite(item) ? "star.fill" : "star"
-                                            )
+                                            favoritesButtonLabel(for: item)
                                         }
                                         Button("Edit Tags...") {
                                             showTagEditorForItem = item
@@ -416,6 +608,22 @@ private struct TimelineGridView: View {
         }
     }
 
+    private func favoritesButtonLabel(for item: ScreenshotItem) -> some View {
+        let selectedItems = library.selectedItems()
+        let isMultiSelect = selectedItems.count > 1 && selectedItems.contains(where: { $0.id == item.id })
+        
+        if isMultiSelect {
+            let allFavorited = selectedItems.allSatisfy { organization.isFavorite($0) }
+            let labelText = allFavorited ? "Remove from Favorites (\(selectedItems.count))" : "Add to Favorites (\(selectedItems.count))"
+            let iconName = allFavorited ? "star.fill" : "star"
+            return Label(labelText, systemImage: iconName)
+        } else {
+            let labelText = organization.isFavorite(item) ? "Remove from Favorites" : "Add to Favorites"
+            let iconName = organization.isFavorite(item) ? "star.fill" : "star"
+            return Label(labelText, systemImage: iconName)
+        }
+    }
+
     private func selectGroup(for item: ScreenshotItem) {
         // Select all items in the duplicate or near-duplicate group
         let dupGroup = library.duplicateGroup(for: item)
@@ -438,6 +646,7 @@ private struct ScreenshotCard: View {
     let isMultiSelected: Bool
     let isDuplicate: Bool
     let isNearDuplicate: Bool
+    @ObservedObject var organization: OrganizationModel
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -460,6 +669,46 @@ private struct ScreenshotCard: View {
                     Spacer()
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(10)
+                .allowsHitTesting(false)
+                
+                // Organization indicators overlay - positioned at top-right
+                VStack(alignment: .trailing, spacing: 6) {
+                    HStack(spacing: 6) {
+                        Spacer()
+                        if organization.isFavorite(item) {
+                            Image(systemName: "star.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(.yellow)
+                                .padding(6)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
+                                .transition(.scale.combined( with: .opacity))
+                        }
+                        if !organization.tags(for: item).isEmpty {
+                            Image(systemName: "tag.fill")
+                                .font(.system(size: 14))
+                                .foregroundColor(.blue)
+                                .padding(6)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
+                                .transition(.scale.combined(with: .opacity))
+                        }
+                        if let collectionID = organization.collections.first(where: { $0.screenshotIDs.contains(item.id) })?.id,
+                           let collection = organization.collections.first(where: { $0.id == collectionID }) {
+                            Circle()
+                                .fill(Color(hex: collection.color))
+                                .frame(width: 20, height: 20)
+                                .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
+                                .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
+                                .transition(.scale.combined(with: .opacity))
+                        }
+                    }
+                    Spacer()
+                }
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: organization.isFavorite(item))
+                .animation(.spring(response: 0.3, dampingFraction: 0.7), value: organization.tags(for: item).count)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
                 .padding(10)
                 .allowsHitTesting(false)
                 
@@ -1137,12 +1386,24 @@ private struct OrganizationSidebar: View {
             // All Screenshots
             Section {
                 NavigationLink(value: "all") {
-                    Label("All Screenshots", systemImage: "photo.on.rectangle")
+                    HStack {
+                        Label("All Screenshots", systemImage: "photo.on.rectangle")
+                        Spacer()
+                        Text("\(library.items.count)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .tag("all")
                 
                 NavigationLink(value: "favorites") {
-                    Label("Favorites", systemImage: "star.fill")
+                    HStack {
+                        Label("Favorites", systemImage: "star.fill")
+                        Spacer()
+                        Text("\(library.items.filter { organization.isFavorite($0) }.count)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .tag("favorites")
             }
@@ -1182,7 +1443,13 @@ private struct OrganizationSidebar: View {
             Section("Smart Folders") {
                 ForEach(organization.smartFolders) { folder in
                     NavigationLink(value: "smart-\(folder.id.uuidString)") {
-                        Label(folder.name, systemImage: "folder.smart")
+                        HStack {
+                            Label(folder.name, systemImage: "folder.smart")
+                            Spacer()
+                            Text("\(library.items.filter { organization.matchesSmartFolder($0, folder: folder) }.count)")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     .tag("smart-\(folder.id.uuidString)")
                     .contextMenu {
@@ -1381,7 +1648,7 @@ private struct NewCollectionView: View {
                     isPresented = false
                 }
                 Button("Create") {
-                    organization.createCollection(name: name, color: color)
+                    _ = organization.createCollection(name: name, color: color)
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
@@ -1435,7 +1702,7 @@ private struct NewSmartFolderView: View {
                     if isFavorite {
                         rules.append(.isFavorite)
                     }
-                    organization.createSmartFolder(name: name, rules: rules)
+                    _ = organization.createSmartFolder(name: name, rules: rules)
                     isPresented = false
                 }
                 .buttonStyle(.borderedProminent)
@@ -1884,5 +2151,26 @@ extension Color {
             blue: Double(b) / 255,
             opacity: Double(a) / 255
         )
+    }
+}
+
+// MARK: - PDF Editor Window
+
+final class PDFEditorWindowClass: NSWindow {
+    var onClose: (() -> Void)?
+
+    override func close() {
+        onClose?()
+        super.close()
+    }
+
+    // Allow this window to become main so it can properly receive focus
+    override var canBecomeMain: Bool {
+        return true
+    }
+
+    // Allow it to become key for input
+    override var canBecomeKey: Bool {
+        return true
     }
 }
