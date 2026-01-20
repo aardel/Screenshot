@@ -1,0 +1,15 @@
+# Build artifacts
+.build/
+Screenshot Manager.app/
+*.dSYM/
+
+# Xcode
+.DS_Store
+*.xcodeproj/
+*.xcworkspace/# Swift Package Manager
+.swiftpm/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride

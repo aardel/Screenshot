@@ -1,0 +1,74 @@
+import AppKit
+import Foundation
+
+enum ShareActions {
+    /// Shows the macOS share sheet for sharing screenshots
+    static func share(items: [URL], from view: NSView? = nil, relativeTo rect: NSRect? = nil) {
+        guard !items.isEmpty else { return }
+        
+        let sharingPicker = NSSharingServicePicker(items: items)
+        
+        // If a view and rect are provided, show the picker relative to that view
+        if let view = view, let rect = rect {
+            sharingPicker.show(relativeTo: rect, of: view, preferredEdge: .minY)
+        } else {
+            // Fallback: show from the current mouse location or center of screen
+            if let window = NSApp.keyWindow,
+               let contentView = window.contentView {
+                let mouseLocation = NSEvent.mouseLocation
+                let windowLocation = window.convertPoint(fromScreen: mouseLocation)
+                let rect = NSRect(x: windowLocation.x, y: windowLocation.y, width: 1, height: 1)
+                sharingPicker.show(relativeTo: rect, of: contentView, preferredEdge: .minY)
+            }
+        }
+    }
+    
+    /// Get available sharing services for messaging apps
+    static func availableMessagingServices(for items: [URL]) -> [(name: String, service: NSSharingService)] {
+        guard !items.isEmpty else { return [] }
+
+        let allServices = NSSharingService.sharingServices(forItems: items)
+        var messagingServices: [(name: String, service: NSSharingService)] = []
+        var seenTitles = Set<String>() // lowercased, dedup
+
+        for service in allServices {
+            let serviceName = service.title.lowercased()
+
+            // Check for common messaging apps
+            let isMessaging = serviceName.contains("whatsapp") ||
+                serviceName.contains("telegram") ||
+                serviceName.contains("messenger") ||
+                serviceName.contains("signal") ||
+                serviceName.contains("slack") ||
+                serviceName.contains("discord") ||
+                serviceName == "messages" ||
+                serviceName.contains("message")
+
+            if isMessaging, seenTitles.insert(serviceName).inserted {
+                messagingServices.append((name: service.title, service: service))
+            }
+        }
+
+        return messagingServices
+    }
+    
+    /// Quick share to Messages
+    static func shareToMessages(items: [URL]) {
+        guard let service = NSSharingService(named: .composeMessage) else { return }
+        service.perform(withItems: items)
+    }
+    
+    /// Quick share to Mail
+    static func shareToMail(items: [URL]) {
+        guard let service = NSSharingService(named: .composeEmail) else { return }
+        service.perform(withItems: items)
+    }
+    
+    /// Share to a specific service by name
+    static func shareToService(named serviceName: String, items: [URL]) {
+        let allServices = NSSharingService.sharingServices(forItems: items)
+        if let service = allServices.first(where: { $0.title.lowercased() == serviceName.lowercased() }) {
+            service.perform(withItems: items)
+        }
+    }
+}
