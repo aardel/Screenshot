@@ -141,6 +141,27 @@ struct PDFEditorView: View {
             
             Divider().frame(height: 20)
             
+            // Undo/Redo
+            HStack(spacing: 4) {
+                Button { viewModel.undo() } label: { 
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .disabled(!viewModel.canUndo)
+                .toolbarButtonStyle()
+                .help("Undo (Cmd+Z)")
+                .keyboardShortcut("z", modifiers: .command)
+                
+                Button { viewModel.redo() } label: { 
+                    Image(systemName: "arrow.uturn.forward")
+                }
+                .disabled(!viewModel.canRedo)
+                .toolbarButtonStyle()
+                .help("Redo (Cmd+Shift+Z)")
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
+            
+            Divider().frame(height: 20)
+            
             Button("Cancel") { 
                 isPresented = false
                 // Close the window
@@ -494,6 +515,13 @@ class PDFEditorViewModel: ObservableObject {
     @Published var activeAnnotationResizeHandle: ResizeHandle?
     @Published var annotationResizeStartRect: CGRect?
 
+    // Undo/Redo State
+    @Published private var undoStack: [PDFDocumentModel] = []
+    @Published private var redoStack: [PDFDocumentModel] = []
+    
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
+
     let initialItems: [ScreenshotItem]
 
     // Subscription to forward nested ObservableObject changes
@@ -502,12 +530,39 @@ class PDFEditorViewModel: ObservableObject {
     init(items: [ScreenshotItem]) {
         self.initialItems = items
         self.document = PDFDocumentModel(items: items)
-
+        
         // Forward changes from nested document to this viewModel
         // This ensures SwiftUI updates when document.pages changes
         documentSubscription = document.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+    }
+    
+    // MARK: - Undo/Redo Logic
+    
+    func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        
+        // Push current state to redo
+        redoStack.append(document.copy())
+        
+        // Restore previous
+        document = previous
+    }
+    
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        
+        // Push current to undo
+        undoStack.append(document.copy())
+        
+        // Restore next
+        document = next
+    }
+    
+    func registerUndo() {
+        undoStack.append(document.copy())
+        redoStack.removeAll()
     }
     
     var currentPage: PDFPageModel {
@@ -524,12 +579,14 @@ class PDFEditorViewModel: ObservableObject {
     }
     
     func addNewPage() {
+        registerUndo()
         document.pages.append(PDFPageModel())
         currentPageIndex = document.pages.count - 1
     }
     
     func deletePage(at index: Int) {
         guard document.pages.count > 1 else { return }
+        registerUndo()
         document.pages.remove(at: index)
         if currentPageIndex >= document.pages.count {
             currentPageIndex = document.pages.count - 1
@@ -537,12 +594,14 @@ class PDFEditorViewModel: ObservableObject {
     }
     
     func addAnnotation(_ annotation: PDFAnnotationModel) {
+        registerUndo()
         var page = currentPage
         page.annotations.append(annotation)
         currentPage = page
     }
     
     func addElement(_ element: PDFElementModel) {
+        registerUndo()
         var page = currentPage
         page.elements.append(element)
         currentPage = page
@@ -550,6 +609,9 @@ class PDFEditorViewModel: ObservableObject {
     
     func updateElement(at index: Int, frame: CGRect) {
         guard currentPage.elements.indices.contains(index) else { return }
+        // Note: For continuous dragging, we usually registerUndo at start of drag, not every frame.
+        // But for this simple setter, we assume it's a discrete change or managed by caller.
+        // For dragging, caller should registerUndo on drag start.
         var page = currentPage
         page.elements[index].frame = frame
         currentPage = page
@@ -631,11 +693,13 @@ class PDFEditorViewModel: ObservableObject {
     
     func deleteSelected() {
         if let index = selectedAnnotationIndex {
+            registerUndo()
             var page = currentPage
             page.annotations.remove(at: index)
             currentPage = page
             selectedAnnotationIndex = nil
         } else if let index = selectedElementIndex {
+            registerUndo()
             var page = currentPage
             page.elements.remove(at: index)
             currentPage = page
@@ -1064,6 +1128,7 @@ struct PageCanvasView: View {
         let element = viewModel.currentPage.elements[elementIndex]
         
         if viewModel.activeResizeHandle == nil {
+            viewModel.registerUndo()
             viewModel.activeResizeHandle = handle
             viewModel.resizeStartFrame = element.frame
         }
@@ -1142,23 +1207,38 @@ struct PageCanvasView: View {
                 let scaledStart = CGPoint(x: start.x * zoom, y: start.y * zoom)
                 let scaledEnd = CGPoint(x: end.x * zoom, y: end.y * zoom)
                 let angle = atan2(scaledEnd.y - scaledStart.y, scaledEnd.x - scaledStart.x)
-                let headLength: CGFloat = 15
+                let arrowLength = 14 + currentAnnotation.lineWidth * 1.5
+                let arrowAngle: CGFloat = .pi / 7
 
+                // Stop line at base of arrowhead
+                let lineEnd = CGPoint(
+                    x: scaledEnd.x - arrowLength * 0.7 * cos(angle),
+                    y: scaledEnd.y - arrowLength * 0.7 * sin(angle)
+                )
+
+                // Draw line
                 Path { path in
                     path.move(to: scaledStart)
-                    path.addLine(to: scaledEnd)
-                    path.move(to: scaledEnd)
-                    path.addLine(to: CGPoint(
-                        x: scaledEnd.x - headLength * cos(angle - .pi/6),
-                        y: scaledEnd.y - headLength * sin(angle - .pi/6)
-                    ))
-                    path.move(to: scaledEnd)
-                    path.addLine(to: CGPoint(
-                        x: scaledEnd.x - headLength * cos(angle + .pi/6),
-                        y: scaledEnd.y - headLength * sin(angle + .pi/6)
-                    ))
+                    path.addLine(to: lineEnd)
                 }
                 .stroke(color, lineWidth: currentAnnotation.lineWidth)
+
+                // Draw filled arrowhead
+                Path { path in
+                    let p1 = CGPoint(
+                        x: scaledEnd.x - arrowLength * cos(angle - arrowAngle),
+                        y: scaledEnd.y - arrowLength * sin(angle - arrowAngle)
+                    )
+                    let p2 = CGPoint(
+                        x: scaledEnd.x - arrowLength * cos(angle + arrowAngle),
+                        y: scaledEnd.y - arrowLength * sin(angle + arrowAngle)
+                    )
+                    path.move(to: scaledEnd)
+                    path.addLine(to: p1)
+                    path.addLine(to: p2)
+                    path.closeSubpath()
+                }
+                .fill(color)
 
             case .rectangle(let rect):
                 let scaledRect = CGRect(
@@ -1270,6 +1350,7 @@ struct PageCanvasView: View {
         }
 
         if viewModel.activeAnnotationResizeHandle == nil {
+            viewModel.registerUndo()
             viewModel.activeAnnotationResizeHandle = handle
             viewModel.annotationResizeStartRect = currentRect
         }
@@ -1383,26 +1464,36 @@ struct PageCanvasView: View {
             
         case .arrow:
             if let end = viewModel.currentDragPoints.last {
+                let angle = atan2(end.y - start.y, end.x - start.x)
+                let arrowLength = 14 + viewModel.lineWidth * 1.5
+                let arrowAngle: CGFloat = .pi / 7
+                
+                // Stop line at base of arrowhead
+                let lineEnd = CGPoint(
+                    x: end.x - arrowLength * 0.7 * cos(angle),
+                    y: end.y - arrowLength * 0.7 * sin(angle)
+                )
+                
                 var path = Path()
                 path.move(to: start)
-                path.addLine(to: end)
+                path.addLine(to: lineEnd)
                 context.stroke(path, with: .color(color), lineWidth: viewModel.lineWidth)
                 
-                // Draw arrowhead
-                let angle = atan2(end.y - start.y, end.x - start.x)
-                let headLength: CGFloat = 15
+                // Draw filled arrowhead
                 var head = Path()
+                let p1 = CGPoint(
+                    x: end.x - arrowLength * cos(angle - arrowAngle),
+                    y: end.y - arrowLength * sin(angle - arrowAngle)
+                )
+                let p2 = CGPoint(
+                    x: end.x - arrowLength * cos(angle + arrowAngle),
+                    y: end.y - arrowLength * sin(angle + arrowAngle)
+                )
                 head.move(to: end)
-                head.addLine(to: CGPoint(
-                    x: end.x - headLength * cos(angle - .pi/6),
-                    y: end.y - headLength * sin(angle - .pi/6)
-                ))
-                head.move(to: end)
-                head.addLine(to: CGPoint(
-                    x: end.x - headLength * cos(angle + .pi/6),
-                    y: end.y - headLength * sin(angle + .pi/6)
-                ))
-                context.stroke(head, with: .color(color), lineWidth: viewModel.lineWidth)
+                head.addLine(to: p1)
+                head.addLine(to: p2)
+                head.closeSubpath()
+                context.fill(head, with: .color(color))
             }
             
         case .rectangle:
@@ -1597,6 +1688,10 @@ struct PageCanvasView: View {
 
         // Initialize drag on first event - store the start position
         if viewModel.dragStart == nil {
+            // Register Undo if we have something selected to move
+            if viewModel.selectedAnnotationIndex != nil || viewModel.selectedElementIndex != nil {
+                 viewModel.registerUndo()
+            }
             viewModel.dragStart = value.startLocation
             return // Don't move on first event, just initialize
         }
@@ -1754,6 +1849,14 @@ class PDFDocumentModel: ObservableObject {
     init(items: [ScreenshotItem]) {
         self.pages = [PDFPageModel()]
     }
+    
+    init(pages: [PDFPageModel]) {
+        self.pages = pages
+    }
+    
+    func copy() -> PDFDocumentModel {
+        return PDFDocumentModel(pages: self.pages)
+    }
 }
 
 struct PDFPageModel: Identifiable {
@@ -1833,19 +1936,35 @@ struct PageRenderView: View {
                         }
                         
                     case .arrow(let start, let end):
+                        let angle = atan2(end.y - start.y, end.x - start.x)
+                        let arrowLength = 14 + annotation.lineWidth * 1.5
+                        let arrowAngle: CGFloat = .pi / 7
+                        
+                        // Stop line at base of arrowhead
+                        let lineEnd = CGPoint(
+                            x: end.x - arrowLength * 0.7 * cos(angle),
+                            y: end.y - arrowLength * 0.7 * sin(angle)
+                        )
+                        
                         var path = Path()
                         path.move(to: start)
-                        path.addLine(to: end)
+                        path.addLine(to: lineEnd)
                         context.stroke(path, with: .color(color), lineWidth: annotation.lineWidth)
                         
-                        let angle = atan2(end.y - start.y, end.x - start.x)
-                        let headLength: CGFloat = 15
                         var head = Path()
+                        let p1 = CGPoint(
+                            x: end.x - arrowLength * cos(angle - arrowAngle),
+                            y: end.y - arrowLength * sin(angle - arrowAngle)
+                        )
+                        let p2 = CGPoint(
+                            x: end.x - arrowLength * cos(angle + arrowAngle),
+                            y: end.y - arrowLength * sin(angle + arrowAngle)
+                        )
                         head.move(to: end)
-                        head.addLine(to: CGPoint(x: end.x - headLength * cos(angle - .pi/6), y: end.y - headLength * sin(angle - .pi/6)))
-                        head.move(to: end)
-                        head.addLine(to: CGPoint(x: end.x - headLength * cos(angle + .pi/6), y: end.y - headLength * sin(angle + .pi/6)))
-                        context.stroke(head, with: .color(color), lineWidth: annotation.lineWidth)
+                        head.addLine(to: p1)
+                        head.addLine(to: p2)
+                        head.closeSubpath()
+                        context.fill(head, with: .color(color))
                         
                     case .rectangle(let rect):
                         context.stroke(Path(rect), with: .color(color), lineWidth: annotation.lineWidth)

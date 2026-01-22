@@ -41,8 +41,16 @@ final class ScreenshotLibrary: ObservableObject {
         return fileManager.homeDirectoryForCurrentUser.appendingPathComponent("Desktop")
     }
 
+    // Cache of all items from disk, unfiltered
+    private var allItems: [ScreenshotItem] = []
+    
+    // Task handling
+    private var loadTask: Task<Void, Never>?
+    
     func start() {
+        // Initial load
         reload()
+        
         watcher = DirectoryWatcher(url: watchedFolder) { [weak self] in
             // Debounce reloads: cancel any pending reload and schedule a new one after a short delay
             // This helps handle macOS screenshot preview windows that keep files locked
@@ -82,42 +90,31 @@ final class ScreenshotLibrary: ObservableObject {
         perceptualHashTask = nil
         reloadTask?.cancel()
         reloadTask = nil
+        loadTask?.cancel()
+        loadTask = nil
     }
 
+    // Full reload from disk (slow, use sparingly)
     func reload() {
-        let urls: [URL]
-        do {
-            urls = try fileManager.contentsOfDirectory(
-                at: watchedFolder,
-                includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey, .isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )
-        } catch {
-            ErrorLogger.shared.logFileOperation(
-                "List directory contents",
-                path: watchedFolder.path,
-                error: error,
-                showToUser: false
-            )
-            items = []
-            selectedID = nil
-            return
+        loadTask?.cancel()
+        loadTask = Task {
+            let newItems = await loadFromDisk()
+            if !Task.isCancelled {
+                await MainActor.run {
+                    self.allItems = newItems
+                    self.applyFilters()
+                    
+                    // Start hashing for new items
+                    self.kickOffHashing(for: newItems)
+                    self.kickOffPerceptualHashing(for: newItems)
+                }
+            }
         }
-
-        let candidates: [ScreenshotItem] = urls.compactMap { url in
-            // Check if file is readable (not locked by macOS screenshot preview)
-            guard fileManager.isReadableFile(atPath: url.path) else { return nil }
-            guard (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return nil }
-            let createdAt = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate)
-                ?? (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
-                ?? .distantPast
-            let item = ScreenshotItem(id: url, url: url, createdAt: createdAt)
-            guard item.isMediaFile else { return nil }
-            return item
-        }
-        .sorted { $0.createdAt > $1.createdAt }
-
-        let filtered = applyDateFilter(to: candidates)
+    }
+    
+    // Apply filters to existing cached items (fast, use for UI toggles)
+    func applyFilters() {
+        let filtered = applyDateFilter(to: allItems)
         let searchFiltered = applySearchFilter(to: filtered)
         let deduped = showDuplicatesOnly ? filterDuplicates(in: searchFiltered) : searchFiltered
         let nearDeduped = showNearDuplicatesOnly ? filterNearDuplicates(in: deduped) : deduped
@@ -127,15 +124,63 @@ final class ScreenshotLibrary: ObservableObject {
         let smartFolderFiltered = applySmartFolderFilter(to: collectionFiltered)
         let tagFiltered = applyTagFilter(to: smartFolderFiltered)
         let sorted = organization.sortItems(tagFiltered)
-        items = sorted
-        if selectedID == nil, let first = candidates.first {
+        
+        self.items = sorted
+        
+        // Update selection if needed
+        if selectedID == nil, let first = items.first {
             selectedID = first.id
-        } else if let selectedID, !candidates.contains(where: { $0.id == selectedID }) {
-            self.selectedID = candidates.first?.id
+        } else if let selectedID, !items.contains(where: { $0.id == selectedID }) {
+            // Keep selection if it's in allItems but filtered out? No, usually we want to clear or move selection.
+            // But if filtered out, maybe select first available.
+            self.selectedID = items.first?.id
         }
+    }
+    
+    // Background file loading
+    private func loadFromDisk() async -> [ScreenshotItem] {
+        let folder = watchedFolder
+        let fm = fileManager
+        
+        return await Task.detached(priority: .userInitiated) {
+            let urls: [URL]
+            do {
+                urls = try fm.contentsOfDirectory(
+                    at: folder,
+                    includingPropertiesForKeys: [.creationDateKey, .contentModificationDateKey, .isRegularFileKey],
+                    options: [.skipsHiddenFiles]
+                )
+            } catch {
+                await MainActor.run {
+                    ErrorLogger.shared.logFileOperation(
+                        "List directory contents",
+                        path: folder.path,
+                        error: error,
+                        showToUser: false
+                    )
+                }
+                return []
+            }
 
-        kickOffHashing(for: candidates)
-        kickOffPerceptualHashing(for: candidates)
+            let loadedItems: [ScreenshotItem] = urls.compactMap { url in
+                // Quick check context: detached task.
+                // Note: FileManager is thread-safe for these checks.
+                guard fm.isReadableFile(atPath: url.path) else { return nil }
+                // Avoid throwing in compactMap
+                guard let isReg = try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile, isReg else { return nil }
+                
+                let createdAt = (try? url.resourceValues(forKeys: [.creationDateKey]).creationDate)
+                    ?? (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                    ?? .distantPast
+                    
+                let item = ScreenshotItem(id: url, url: url, createdAt: createdAt)
+                guard item.isMediaFile else { return nil }
+                return item
+            }
+            .sorted { $0.createdAt > $1.createdAt }
+            
+            return loadedItems
+        }.value
     }
 
     func latest() -> ScreenshotItem? {
@@ -170,17 +215,17 @@ final class ScreenshotLibrary: ObservableObject {
 
     func setShowDuplicatesOnly(_ on: Bool) {
         showDuplicatesOnly = on
-        reload()
+        applyFilters()
     }
 
     func setShowNearDuplicatesOnly(_ on: Bool) {
         showNearDuplicatesOnly = on
-        reload()
+        applyFilters()
     }
 
     func setShowSelectedOnly(_ on: Bool) {
         showSelectedOnly = on
-        reload()
+        applyFilters()
     }
 
     func isDuplicate(_ item: ScreenshotItem) -> Bool {
@@ -301,7 +346,7 @@ final class ScreenshotLibrary: ObservableObject {
             // If we're showing selected only and just deselected the last item, turn off filter
             if showSelectedOnly && selectedIDs.isEmpty {
                 showSelectedOnly = false
-                reload()
+                applyFilters()
             }
         } else {
             selectedIDs.insert(id)
@@ -509,21 +554,21 @@ final class ScreenshotLibrary: ObservableObject {
         activeCollectionID = collectionID
         activeSmartFolderID = nil
         activeTagFilter = nil
-        reload()
+        applyFilters()
     }
     
     func setActiveSmartFolder(_ folderID: UUID?) {
         activeSmartFolderID = folderID
         activeCollectionID = nil
         activeTagFilter = nil
-        reload()
+        applyFilters()
     }
     
     func setActiveTag(_ tag: String?) {
         activeTagFilter = tag
         activeCollectionID = nil
         activeSmartFolderID = nil
-        reload()
+        applyFilters()
     }
     
     func clearFilters() {
@@ -531,7 +576,7 @@ final class ScreenshotLibrary: ObservableObject {
         activeSmartFolderID = nil
         activeTagFilter = nil
         showFavoritesOnly = false
-        reload()
+        applyFilters()
     }
     
     func setShowFavoritesOnly(_ value: Bool) {
@@ -541,7 +586,7 @@ final class ScreenshotLibrary: ObservableObject {
             activeSmartFolderID = nil
             activeTagFilter = nil
         }
-        reload()
+        applyFilters()
     }
 
     private func kickOffHashing(for items: [ScreenshotItem]) {

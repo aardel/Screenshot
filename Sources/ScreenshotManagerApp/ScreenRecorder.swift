@@ -148,7 +148,7 @@ final class ScreenRecorder: NSObject {
         guard let folder = folder else { return }
         outputURL = folder.appendingPathComponent(filename)
 
-        guard let outputURL = outputURL else { return }
+        guard let url = outputURL else { return }
 
         do {
             // Configure stream
@@ -160,7 +160,7 @@ final class ScreenRecorder: NSObject {
             config.pixelFormat = kCVPixelFormatType_32BGRA
 
             // Setup asset writer
-            assetWriter = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+            assetWriter = try AVAssetWriter(outputURL: url, fileType: .mp4)
 
             let videoSettings: [String: Any] = [
                 AVVideoCodecKey: AVVideoCodecType.h264,
@@ -204,6 +204,21 @@ final class ScreenRecorder: NSObject {
 
         } catch {
             print("Failed to start recording: \(error)")
+            // Cleanup on failure
+            await MainActor.run {
+                stopWindowTracking()
+                hideWindowBorder()
+            }
+            // Reset stream and writer
+            // Note: stream?.stopCapture() is async/throws, but if we failed to start, it might not be needed or valid.
+            // Just releasing the object is usually enough if start failed, but trying stop is safer if it partially started.
+            try? await stream?.stopCapture()
+            stream = nil
+            assetWriter?.cancelWriting()
+            assetWriter = nil
+            streamOutput = nil
+            videoInput = nil
+            outputURL = nil
         }
     }
 

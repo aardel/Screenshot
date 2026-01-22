@@ -1499,7 +1499,7 @@ private struct OrganizationSidebar: View {
                 ForEach(organization.smartFolders) { folder in
                     NavigationLink(value: "smart-\(folder.id.uuidString)") {
                         HStack {
-                            Label(folder.name, systemImage: "folder.smart")
+                            Label(folder.name, systemImage: folder.icon ?? "folder.smart")
                             Spacer()
                             Text("\(library.items.filter { organization.matchesSmartFolder($0, folder: folder) }.count)")
                                 .font(.caption)
@@ -1557,8 +1557,13 @@ private struct OrganizationSidebar: View {
             NewCollectionView(organization: organization, isPresented: $showNewCollection)
         }
         .sheet(isPresented: $showNewSmartFolder) {
-            NewSmartFolderView(organization: organization, isPresented: $showNewSmartFolder)
-                .background(WindowActivator())
+            SmartFolderRuleBuilder(
+                organization: organization,
+                isPresented: $showNewSmartFolder,
+                existingFolder: nil,
+                items: library.items
+            )
+            .background(WindowActivator())
         }
         .sheet(item: $editingCollection) { collection in
             EditCollectionView(collection: collection, organization: organization, isPresented: Binding(
@@ -1578,10 +1583,15 @@ private struct OrganizationSidebar: View {
             .background(WindowActivator())
         }
         .sheet(item: $editingSmartFolder) { folder in
-            EditSmartFolderView(folder: folder, organization: organization, isPresented: Binding(
-                get: { editingSmartFolder != nil },
-                set: { if !$0 { editingSmartFolder = nil } }
-            ))
+            SmartFolderRuleBuilder(
+                organization: organization,
+                isPresented: Binding(
+                    get: { editingSmartFolder != nil },
+                    set: { if !$0 { editingSmartFolder = nil } }
+                ),
+                existingFolder: folder,
+                items: library.items
+            )
             .background(WindowActivator())
         }
         .confirmationDialog(

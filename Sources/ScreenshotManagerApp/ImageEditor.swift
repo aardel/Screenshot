@@ -91,6 +91,18 @@ final class ImageEditorState: ObservableObject {
 
     private(set) var baseImage: NSImage?
     private(set) var imageSize: CGSize = .zero
+    
+    // Undo/Redo Logic
+    private struct Snapshot {
+        let annotations: [ImageAnnotation]
+        let cropRect: CGRect?
+    }
+    
+    @Published private var undoStack: [Snapshot] = []
+    @Published private var redoStack: [Snapshot] = []
+    
+    var canUndo: Bool { !undoStack.isEmpty }
+    var canRedo: Bool { !redoStack.isEmpty }
 
     func load(image: NSImage, notes: String) {
         baseImage = image
@@ -99,12 +111,45 @@ final class ImageEditorState: ObservableObject {
         draftAnnotation = nil
         cropRect = nil
         self.notes = notes
+        undoStack = []
+        redoStack = []
     }
 
     func reset() {
+        registerUndo()
         annotations = []
         draftAnnotation = nil
         cropRect = nil
+    }
+    
+    func undo() {
+        guard let previous = undoStack.popLast() else { return }
+        
+        // Push current state to redo
+        let current = Snapshot(annotations: annotations, cropRect: cropRect)
+        redoStack.append(current)
+        
+        // Restore previous
+        annotations = previous.annotations
+        cropRect = previous.cropRect
+    }
+    
+    func redo() {
+        guard let next = redoStack.popLast() else { return }
+        
+        // Push current to undo
+        let current = Snapshot(annotations: annotations, cropRect: cropRect)
+        undoStack.append(current)
+        
+        // Restore next
+        annotations = next.annotations
+        cropRect = next.cropRect
+    }
+    
+    func registerUndo() {
+        let snapshot = Snapshot(annotations: annotations, cropRect: cropRect)
+        undoStack.append(snapshot)
+        redoStack.removeAll() // Clear redo on new action
     }
 
     func applyDraft() {
@@ -587,6 +632,30 @@ struct ImageEditorView: View {
                 }
 
                 Spacer()
+                
+                // Undo/Redo Buttons
+                HStack(spacing: 0) {
+                    Button { editor.undo() } label: {
+                        Image(systemName: "arrow.uturn.backward")
+                            .frame(width: 24, height: 24)
+                    }
+                    .disabled(!editor.canUndo)
+                    .help("Undo (Cmd+Z)")
+                    .keyboardShortcut("z", modifiers: .command)
+                    .buttonStyle(.plain)
+                    .padding(4)
+                    
+                    Button { editor.redo() } label: {
+                        Image(systemName: "arrow.uturn.forward")
+                            .frame(width: 24, height: 24)
+                    }
+                    .disabled(!editor.canRedo)
+                    .help("Redo (Cmd+Shift+Z)")
+                    .keyboardShortcut("z", modifiers: [.command, .shift])
+                    .buttonStyle(.plain)
+                    .padding(4)
+                }
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 Button("Reset") { editor.reset() }
                     .actionButtonStyle()
@@ -720,8 +789,28 @@ struct ImageEditorView: View {
                 }
             }
             .onEnded { _ in
+                // Only register undo if we actually did something
+                if dragStart != nil && !dragPoints.isEmpty {
+                     // For pen/highlighter
+                     editor.registerUndo()
+                } else if dragStart != nil && (editor.tool != .pen && editor.tool != .highlighter && editor.tool != .loupe && editor.tool != .text) {
+                     // For shapes using dragStart only
+                     editor.registerUndo()
+                } else if editor.tool == .loupe && dragStart != nil {
+                     // For loupe creation
+                     editor.registerUndo()
+                }
+                
                 if editor.tool == .crop {
                     // Keep crop rect but don't add as annotation
+                    if dragStart != nil {
+                       // Crop is special, we should have registered undo when setting the rect.
+                       // But setState happens during drag. We can register undo at start of drag?
+                       // Simpler: Register undo BEFORE applying the draft in applyDraft()
+                       // Actually applyDraft() appends to annotations array.
+                       // Let's change strategy: registerUndo() should be called in applyDraft() BEFORE modification?
+                       // Or call it here.
+                    }
                 } else {
                     editor.applyDraft()
                 }
