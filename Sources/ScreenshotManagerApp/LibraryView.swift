@@ -22,7 +22,7 @@ struct LibraryView: View {
                 .environmentObject(library)
                 .environmentObject(organization)
         } detail: {
-            DetailPane()
+            DetailPane(showPDFEditor: $showPDFEditor)
                 .environmentObject(organization)
         }
         .navigationTitle("Library")
@@ -52,156 +52,120 @@ struct LibraryView: View {
             }
         }
         .toolbar {
-            ToolbarItemGroup {
-                let hasSelection = !library.selectedIDs.isEmpty
-                let multiple = library.selectedIDs.count > 1
-
-                Button {
-                    if multiple {
-                        library.batchCopy(library.selectedItems())
-                    } else if let sel = selectedItem {
-                        ClipboardActions.copyImage(from: sel.url)
-                    }
-                } label: {
-                    Label("Copy", systemImage: "doc.on.doc")
-                }
-                .disabled(!hasSelection)
-
-                ShareButtonView(items: hasSelection ? library.selectedItems().map(\.url) : [])
-                    .disabled(!hasSelection)
-
-                Button {
-                    if let sel = selectedItem {
-                        NSWorkspace.shared.activateFileViewerSelecting([sel.url])
-                    }
-                } label: {
-                    Label("Reveal", systemImage: "folder")
-                }
-                .disabled(selectedItem == nil)
-
-                if multiple {
-                    Button {
-                        library.keepBestFromSelected()
-                    } label: {
-                        Label("Keep Best", systemImage: "wand.and.stars")
-                    }
-                    Button {
-                        showDeleteConfirmation = true
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    .confirmationDialog(
-                        "Delete \(library.selectedIDs.count) screenshots?",
-                        isPresented: $showDeleteConfirmation,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Delete", role: .destructive) {
-                            deleteSelected()
-                        }
-                        Button("Cancel", role: .cancel) {}
-                    }
-                } else {
-                    Button {
-                        deleteSelected()
-                    } label: {
-                        Label("Delete", systemImage: "trash")
-                    }
-                    .disabled(!hasSelection)
-                }
-
-                if hasSelection {
-                    Text("\(library.selectedIDs.count) selected")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                }
-                
-                // Batch operations menu
-                if multiple {
-                    Menu {
-                        Button {
-                            showBatchCollectionPicker = true
-                        } label: {
-                            Label("Add to Collection...", systemImage: "folder.badge.plus")
-                        }
-                        
-                        Button {
-                            showBatchTagEditor = true
-                        } label: {
-                            Label("Add Tags...", systemImage: "tag.fill")
-                        }
-                        
-                        Divider()
-                        
-                        Button {
-                            showPDFEditor = true
-                        } label: {
-                            Label("Create PDF...", systemImage: "doc.richtext")
-                        }
-                        
-                        Divider()
-                        
-                        Button {
-                            exportSelectedScreenshots()
-                        } label: {
-                            Label("Export Selected...", systemImage: "square.and.arrow.up")
-                        }
-                    } label: {
-                        Label("Batch Operations", systemImage: "rectangle.stack.badge.plus")
-                    }
-                    .help("Batch operations for selected items")
-                }
-            }
+            // MARK: - Search Field
             ToolbarItem(placement: .automatic) {
-                HStack(spacing: 8) {
+                HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass")
                         .foregroundStyle(.secondary)
+                        .font(.system(size: 12))
                     TextField("Search...", text: $library.searchQuery)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 200)
+                        .textFieldStyle(.plain)
+                        .frame(width: 180)
                     if !library.searchQuery.isEmpty {
                         Button(action: { library.searchQuery = "" }) {
                             Image(systemName: "xmark.circle.fill")
                                 .foregroundStyle(.secondary)
+                                .font(.system(size: 11))
                         }
                         .buttonStyle(.plain)
-                        .help("Clear search")
                     }
+                }
+                .padding(.horizontal, 4)
+                .controlSize(.small)
+                .frame(height: 26)
+            }
+
+            // MARK: - Date Filter
+            ToolbarItem(placement: .automatic) {
+                HStack(spacing: 0) {
+                    Picker("Date", selection: Binding<SettingsModel.DateFilter?>(
+                        get: { settings.dateFilter },
+                        set: { newValue in
+                            if let val = newValue {
+                                settings.dateFilter = val
+                            }
+                        }
+                    )) {
+                        Text("All").tag(SettingsModel.DateFilter.all as SettingsModel.DateFilter?)
+                        Text("24h").tag(SettingsModel.DateFilter.last24h as SettingsModel.DateFilter?)
+                        Text("7d").tag(SettingsModel.DateFilter.last7d as SettingsModel.DateFilter?)
+                    }
+                    .pickerStyle(.segmented)
+                    .controlSize(.small)
+                    .padding(.trailing, 6)
+
+                    Menu {
+                        ForEach(SettingsModel.DateFilter.allCases) { f in
+                            Button(f.label) { settings.dateFilter = f }
+                        }
+                    } label: {
+                        Label("More", systemImage: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderedButton)
+                    .controlSize(.small)
+                    .padding(.trailing, 6)
                 }
             }
+
+            // MARK: - Duplicates Filter
             ToolbarItem(placement: .automatic) {
-                Picker("Date range", selection: $settings.dateFilter) {
-                    ForEach(SettingsModel.DateFilter.allCases) { f in
-                        Text(f.label).tag(f)
+                Picker("", selection: Binding(
+                    get: {
+                        if library.showDuplicatesOnly { return 1 }
+                        if library.showNearDuplicatesOnly { return 2 }
+                        return 0
+                    },
+                    set: { value in
+                        library.setShowDuplicatesOnly(value == 1)
+                        library.setShowNearDuplicatesOnly(value == 2)
                     }
+                )) {
+                    Text("All").tag(0)
+                    Text("Duplicates").tag(1)
+                    Text("Near Dupes").tag(2)
                 }
+                .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 150)
+                .controlSize(.small)
+                .padding(.horizontal, 4)
             }
+            
+            // MARK: - Utility Actions
             ToolbarItem(placement: .automatic) {
-                Toggle(isOn: Binding(
-                    get: { library.showDuplicatesOnly },
-                    set: { library.setShowDuplicatesOnly($0) }
+                let multiple = library.selectedIDs.count > 1
+                
+                Picker("Utility", selection: Binding<String?>(
+                    get: { nil },
+                    set: { value in
+                        guard let value else { return }
+                        switch value {
+                        case "refresh":
+                            library.reload()
+                        case "best":
+                            library.keepBestFromSelected()
+                        case "batch":
+                            showBatchCollectionPicker = true
+                        default:
+                            break
+                        }
+                    }
                 )) {
-                    Text("Duplicates")
+                    Label("Refresh", systemImage: "arrow.clockwise").tag("refresh" as String?)
+                    if multiple {
+                        Label("Best", systemImage: "wand.and.stars").tag("best" as String?)
+                        Label("Batch", systemImage: "ellipsis.circle").tag("batch" as String?)
+                    }
                 }
-                .toggleStyle(.button)
+                .pickerStyle(.segmented)
+                .controlSize(.small)
+                .frame(width: multiple ? 120 : 40)
             }
+
+            // MARK: - Selection Status
             ToolbarItem(placement: .automatic) {
-                Toggle(isOn: Binding(
-                    get: { library.showNearDuplicatesOnly },
-                    set: { library.setShowNearDuplicatesOnly($0) }
-                )) {
-                    Text("Near Duplicates")
+                if !library.selectedIDs.isEmpty {
+                    StatusPill(text: "\(library.selectedIDs.count) selected")
                 }
-                .toggleStyle(.button)
-            }
-            ToolbarItem(placement: .automatic) {
-                Button(action: { library.reload() }) {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .help("Refresh")
             }
         }
         .onChange(of: settings.dateFilter) { _ in
@@ -407,17 +371,17 @@ private struct TimelineGridView: View {
                             }) {
                                 HStack(spacing: 6) {
                                     Image(systemName: library.showSelectedOnly ? "checkmark.circle.fill" : "circle")
-                                        .foregroundColor(library.showSelectedOnly ? .accentColor : .secondary)
                                     Text("Show Selected Only (\(library.selectedIDs.count))")
                                         .font(.subheadline)
                                 }
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                             Spacer()
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
-                        .background(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                        .background(Color(nsColor: .controlBackgroundColor))
                         .cornerRadius(8)
                         .padding(.horizontal, 12)
                     }
@@ -529,7 +493,7 @@ private struct TimelineGridView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 10)
-                        .background(.regularMaterial)
+                        .background(Color(nsColor: .windowBackgroundColor))
                     }
                 }
             }
@@ -735,6 +699,11 @@ private struct ScreenshotCard: View {
             }
             .frame(height: 160)
             .clipped()
+            .overlay(
+                // Classic selection border
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .stroke(isSelected || isMultiSelected ? Color.accentColor : Color.clear, lineWidth: isSelected ? 3 : 2)
+            )
             
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.filename)
@@ -788,6 +757,7 @@ private struct DetailPane: View {
 // Copy the content and replace the existing DetailPane struct
 
 
+    @Binding var showPDFEditor: Bool
     @EnvironmentObject var library: ScreenshotLibrary
     @EnvironmentObject var organization: OrganizationModel
     @State private var showDeleteConfirmation = false
@@ -847,37 +817,88 @@ private struct DetailPane: View {
                         }
                     }
                     Spacer()
-                    HStack(spacing: 8) {
+                    HStack(spacing: 0) {
                         // Navigation buttons for multiple selections
                         if hasMultipleSelections {
                             Button(action: { library.navigateToPreviousSelected() }) {
                                 Image(systemName: "chevron.left")
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 12)
                             }
+                            .buttonStyle(.plain)
                             .help("Previous (←)")
+                            
+                            Divider().frame(height: 22)
+                            
                             Button(action: { library.navigateToNextSelected() }) {
                                 Image(systemName: "chevron.right")
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 12)
                             }
+                            .buttonStyle(.plain)
                             .help("Next (→)")
+                            
+                            Divider().frame(height: 22)
                         }
+                        
                         // Favorite button
                         Button(action: {
                             organization.toggleFavorite(item)
                             library.reload()
                         }) {
                             Image(systemName: organization.isFavorite(item) ? "star.fill" : "star")
-                                .foregroundColor(organization.isFavorite(item) ? .yellow : .secondary)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 12)
+                                .foregroundColor(organization.isFavorite(item) ? .yellow : .primary)
                         }
+                        .buttonStyle(.plain)
                         .help("Toggle Favorite")
                         
                         if !item.isVideo {
-                            Button(isEditingImage ? "Stop Editing" : "Edit") {
+                            Divider().frame(height: 22)
+                            
+                            Button(isEditingImage ? "Done" : "Edit") {
                                 toggleEditor(for: item)
                             }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .foregroundColor(isEditingImage ? .green : .accentColor)
                         }
 
-                        Button("Copy Image") { ClipboardActions.copyImage(from: item.url) }
-                        ShareButtonView(items: hasMultipleSelections ? selectedItemsOrdered.map(\.url) : [item.url])
-                        Menu("More") {
+                        Divider().frame(height: 22)
+                        
+                        // Share menu
+                        Menu {
+                            let messagingServices = ShareActions.availableMessagingServices(for: hasMultipleSelections ? selectedItemsOrdered.map(\.url) : [item.url])
+                            if !messagingServices.isEmpty {
+                                ForEach(messagingServices, id: \.name) { serviceInfo in
+                                    Button(serviceInfo.name) {
+                                        serviceInfo.service.perform(withItems: hasMultipleSelections ? selectedItemsOrdered.map(\.url) : [item.url])
+                                    }
+                                }
+                                Divider()
+                            }
+                            Button("More...") {
+                                let items = hasMultipleSelections ? selectedItemsOrdered.map(\.url) : [item.url]
+                                if let window = NSApp.keyWindow, let contentView = window.contentView {
+                                    let sharingPicker = NSSharingServicePicker(items: items)
+                                    sharingPicker.show(relativeTo: .zero, of: contentView, preferredEdge: .minY)
+                                }
+                            }
+                        } label: {
+                            Label("Share", systemImage: "square.and.arrow.up")
+                                .labelStyle(.titleAndIcon)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                        }
+                        .menuStyle(.borderlessButton)
+                        .controlSize(.small)
+                        
+                        Divider().frame(height: 22)
+                        
+                        // More menu
+                        Menu {
                             Button(action: { organization.toggleFavorite(item); library.reload() }) {
                                 Text(organization.isFavorite(item) ? "Remove from Favorites" : "Add to Favorites")
                             }
@@ -892,11 +913,31 @@ private struct DetailPane: View {
                             Button("Copy File URL") { ClipboardActions.copyFileURL(item.url) }
                             Button("Reveal in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }
                             Divider()
+                            Button("Create PDF...") {
+                                showPDFEditor = true
+                            }
+                            Divider()
                             Button("Delete", role: .destructive) {
                                 showDeleteConfirmation = true
                             }
+                        } label: {
+                            Label("More", systemImage: "ellipsis.circle")
+                                .labelStyle(.titleAndIcon)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
                         }
+                        .menuStyle(.borderlessButton)
+                        .controlSize(.small)
                     }
+                    .background(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                    )
+                    .controlSize(.small)
                 }
                 .padding(12)
 
@@ -915,7 +956,8 @@ private struct DetailPane: View {
                                 Image(systemName: "plus.circle")
                                     .font(.caption)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                             .help("Add Tag")
                         }
                         
@@ -949,7 +991,8 @@ private struct DetailPane: View {
                                 Image(systemName: organization.collection(for: item) != nil ? "pencil.circle" : "plus.circle")
                                     .font(.caption)
                             }
-                            .buttonStyle(.plain)
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
                             .help(organization.collection(for: item) != nil ? "Change Collection" : "Add to Collection")
                         }
                         
@@ -968,7 +1011,7 @@ private struct DetailPane: View {
                                         .font(.caption2)
                                         .foregroundStyle(.secondary)
                                 }
-                                .buttonStyle(.plain)
+                                .buttonStyle(PlainButtonStyle())
                             }
                         } else {
                             Text("No collection")
@@ -1192,17 +1235,23 @@ private struct ThumbnailView: View {
         .task(id: item.url) {
             // Reset image when URL changes
             image = nil
-            
-            // Generate thumbnail on background thread for videos to avoid blocking
-            if item.isVideo {
-                Task.detached(priority: .userInitiated) {
-                    let thumbnail = await Thumbnailer.thumbnail(for: item.url, maxPixelSize: 256)
-                    await MainActor.run {
+            let currentURL = item.url
+
+            // Generate thumbnail on background thread for both images and videos to avoid blocking UI
+            Task.detached(priority: .userInitiated) {
+                let thumbnail: NSImage?
+                if item.isVideo {
+                    thumbnail = await Thumbnailer.thumbnail(for: currentURL, maxPixelSize: 256)
+                } else {
+                    // Use sync thumbnailer off the main thread to avoid UI jank
+                    thumbnail = Thumbnailer.thumbnailSync(for: currentURL, maxPixelSize: 256)
+                }
+                await MainActor.run {
+                    // Guard against races if the item changed while we were generating
+                    if currentURL == item.url {
                         image = thumbnail
                     }
                 }
-            } else {
-                image = Thumbnailer.thumbnailSync(for: item.url, maxPixelSize: 256)
             }
         }
     }
@@ -1249,8 +1298,9 @@ private struct VideoPlayerView: NSViewRepresentable {
     }
     
     func updateNSView(_ nsView: AVPlayerView, context: Context) {
-        // Update player if URL changes
-        if nsView.player?.currentItem?.asset as? AVURLAsset != AVURLAsset(url: url) {
+        // Update player if URL changes (compare by URL to avoid unnecessary recreation)
+        let currentAssetURL = (nsView.player?.currentItem?.asset as? AVURLAsset)?.url
+        if currentAssetURL != url {
             nsView.player = AVPlayer(url: url)
         }
     }
@@ -1322,7 +1372,10 @@ struct ShareButtonView: View {
         } label: {
             Label("Share", systemImage: "square.and.arrow.up")
         }
-        .menuStyle(.borderlessButton)
+        .labelStyle(.iconOnly)
+        .menuStyle(.borderedButton)
+        .controlSize(.small)
+        .help("Share")
     }
     
     private func showShareSheet() {
@@ -1437,6 +1490,8 @@ private struct OrganizationSidebar: View {
                 Button(action: { showNewCollection = true }) {
                     Label("New Collection", systemImage: "plus.circle")
                 }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
             }
             
             // Smart Folders
@@ -1465,6 +1520,8 @@ private struct OrganizationSidebar: View {
                 Button(action: { showNewSmartFolder = true }) {
                     Label("New Smart Folder", systemImage: "plus.circle")
                 }
+                .controlSize(.small)
+                .buttonStyle(.bordered)
             }
             
             // Tags
@@ -1798,7 +1855,7 @@ private struct TagEditorView: View {
                                     organization.addTag(tag, to: item)
                                     onUpdate()
                                 }
-                                .buttonStyle(.bordered)
+                                .buttonStyle(PlainButtonStyle())
                                 .controlSize(.small)
                             }
                         }
@@ -2174,3 +2231,5 @@ final class PDFEditorWindowClass: NSWindow {
         return true
     }
 }
+
+

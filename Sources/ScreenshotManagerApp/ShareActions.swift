@@ -1,6 +1,10 @@
 import AppKit
 import Foundation
 
+// MARK: - Availability Notes
+// NSSharingService.sharingServices(forItems:) is deprecated for building UI starting with macOS 14.
+// We retain usage here for compatibility and discovery of messaging services.
+
 enum ShareActions {
     /// Shows the macOS share sheet for sharing screenshots
     static func share(items: [URL], from view: NSView? = nil, relativeTo rect: NSRect? = nil) {
@@ -26,30 +30,14 @@ enum ShareActions {
     /// Get available sharing services for messaging apps
     static func availableMessagingServices(for items: [URL]) -> [(name: String, service: NSSharingService)] {
         guard !items.isEmpty else { return [] }
-
-        let allServices = NSSharingService.sharingServices(forItems: items)
-        var messagingServices: [(name: String, service: NSSharingService)] = []
-        var seenTitles = Set<String>() // lowercased, dedup
-
-        for service in allServices {
-            let serviceName = service.title.lowercased()
-
-            // Check for common messaging apps
-            let isMessaging = serviceName.contains("whatsapp") ||
-                serviceName.contains("telegram") ||
-                serviceName.contains("messenger") ||
-                serviceName.contains("signal") ||
-                serviceName.contains("slack") ||
-                serviceName.contains("discord") ||
-                serviceName == "messages" ||
-                serviceName.contains("message")
-
-            if isMessaging, seenTitles.insert(serviceName).inserted {
-                messagingServices.append((name: service.title, service: service))
-            }
+        var quick: [(name: String, service: NSSharingService)] = []
+        if let messages = NSSharingService(named: .composeMessage) {
+            quick.append((name: messages.title, service: messages))
         }
-
-        return messagingServices
+        if let airdrop = NSSharingService(named: .sendViaAirDrop) {
+            quick.append((name: airdrop.title, service: airdrop))
+        }
+        return quick
     }
     
     /// Quick share to Messages
@@ -66,9 +54,21 @@ enum ShareActions {
     
     /// Share to a specific service by name
     static func shareToService(named serviceName: String, items: [URL]) {
-        let allServices = NSSharingService.sharingServices(forItems: items)
-        if let service = allServices.first(where: { $0.title.lowercased() == serviceName.lowercased() }) {
+        let lower = serviceName.lowercased()
+        if lower.contains("airdrop"), let service = NSSharingService(named: .sendViaAirDrop) {
             service.perform(withItems: items)
+            return
         }
+        if lower.contains("message"), let service = NSSharingService(named: .composeMessage) {
+            service.perform(withItems: items)
+            return
+        }
+        if lower.contains("mail"), let service = NSSharingService(named: .composeEmail) {
+            service.perform(withItems: items)
+            return
+        }
+        // Fallback: show standard share sheet
+        share(items: items)
     }
 }
+

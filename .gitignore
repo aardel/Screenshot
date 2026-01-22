@@ -1,9 +1,7 @@
 # Build artifacts
 .build/
 Screenshot Manager.app/
-*.dSYM/
-
-# Xcode
+*.dSYM/# Xcode
 .DS_Store
 *.xcodeproj/
 *.xcworkspace/# Swift Package Manager

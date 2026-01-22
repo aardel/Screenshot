@@ -28,7 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
-        ) { [weak self] _ in
+        ) { _ in
             // Restore cursor when app becomes active (e.g., after permission dialogs)
             NSCursor.unhide()
             NSCursor.arrow.set()

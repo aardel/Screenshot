@@ -238,9 +238,17 @@ final class OrganizationModel: ObservableObject {
             let data = try Data(contentsOf: url)
             let export = try JSONDecoder().decode(MetadataExport.self, from: data)
             
-            // Merge imported data with existing
+            // Normalize imported keys: support both absolute URL strings and file system paths
             for (keyString, value) in export.metadata {
-                if let urlKey = URL(string: keyString) {
+                let urlKey: URL?
+                if let candidate = URL(string: keyString), candidate.scheme != nil {
+                    // Likely an absolute URL string (e.g., file://)
+                    urlKey = candidate
+                } else {
+                    // Treat as a file system path
+                    urlKey = URL(fileURLWithPath: keyString)
+                }
+                if let urlKey {
                     metadata[urlKey] = value
                 }
             }
@@ -467,17 +475,33 @@ final class OrganizationModel: ObservableObject {
         }
     }
     
+    /// Load metadata keys as absolute URL strings for consistency.
+    /// Fallback to file paths if string is not a valid URL.
     private func loadMetadata() {
         guard let data = try? Data(contentsOf: metadataURL),
               let decoded = try? JSONDecoder().decode([String: ScreenshotMetadata].self, from: data) else {
             metadata = [:]
             return
         }
-        metadata = decoded.mapKeys { URL(fileURLWithPath: $0) }
+        // Keys are stored as absolute URL strings (e.g., file://...) for consistency
+        var rebuilt: [URL: ScreenshotMetadata] = [:]
+        for (key, value) in decoded {
+            if let url = URL(string: key) {
+                rebuilt[url] = value
+            } else {
+                // Fallback: treat as file path if string isn't a valid URL
+                rebuilt[URL(fileURLWithPath: key)] = value
+            }
+        }
+        metadata = rebuilt
     }
     
+    /// Save metadata keys as absolute URL strings for consistency across save/load/export/import
     private func saveMetadata() {
-        let encoded = metadata.mapKeys { $0.path }
+        // Persist keys as absolute URL strings for consistency across save/load/export/import
+        let encoded: [String: ScreenshotMetadata] = metadata.reduce(into: [:]) { dict, pair in
+            dict[pair.key.absoluteString] = pair.value
+        }
         do {
             let data = try JSONEncoder().encode(encoded)
             try data.write(to: metadataURL, options: .atomic)

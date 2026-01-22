@@ -114,9 +114,10 @@ struct PDFEditorView: View {
                 Button {
                     viewModel.deleteSelected()
                 } label: {
-                    Label("Delete", systemImage: "trash")
+                    Image(systemName: "trash")
                 }
-                .buttonStyle(.bordered)
+                .toolbarButtonStyle()
+                .help("Delete selection")
             }
             
             Divider().frame(height: 20)
@@ -125,17 +126,17 @@ struct PDFEditorView: View {
             HStack(spacing: 4) {
                 Button { viewModel.zoom = max(0.5, viewModel.zoom - 0.25) } label: { 
                     Image(systemName: "minus.magnifyingglass")
-                        .frame(width: 20, height: 20)
                 }
-                .buttonStyle(.bordered)
+                .toolbarButtonStyle()
+                
                 Text("\(Int(viewModel.zoom * 100))%")
                     .frame(width: 45)
                     .font(.caption)
+                
                 Button { viewModel.zoom = min(2.0, viewModel.zoom + 0.25) } label: { 
                     Image(systemName: "plus.magnifyingglass")
-                        .frame(width: 20, height: 20)
                 }
-                .buttonStyle(.bordered)
+                .toolbarButtonStyle()
             }
             
             Divider().frame(height: 20)
@@ -147,10 +148,10 @@ struct PDFEditorView: View {
                     window.close()
                 }
             }
-            .buttonStyle(.bordered)
+            .actionButtonStyle()
             
             Button("Export PDF") { viewModel.exportPDF() }
-                .buttonStyle(.borderedProminent)
+                .actionButtonStyle(isProminent: true)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -169,21 +170,20 @@ struct PDFEditorView: View {
         } label: {
             VStack(spacing: 3) {
                 Image(systemName: tool.icon)
-                    .foregroundColor(viewModel.selectedTool == tool ? .white : .primary)
                     .font(.system(size: 16))
                 Text(tool.rawValue)
                     .font(.system(size: 10))
-                    .foregroundColor(viewModel.selectedTool == tool ? .white : .primary)
                     .lineLimit(1)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .frame(width: 65, height: 50)
-            .background(viewModel.selectedTool == tool ? Color.accentColor : Color.clear)
-            .cornerRadius(6)
         }
-        .buttonStyle(.plain)
+        .toolbarButtonStyle()
+        .background(viewModel.selectedTool == tool ? Color.accentColor : Color.clear)
+        .foregroundColor(viewModel.selectedTool == tool ? .white : .primary)
+        .cornerRadius(6)
         .help(tool.rawValue)
     }
     
@@ -198,7 +198,7 @@ struct PDFEditorView: View {
                 Button { viewModel.addNewPage() } label: {
                     Image(systemName: "plus")
                 }
-                .buttonStyle(.plain)
+                .toolbarButtonStyle()
             }
             .padding(8)
             

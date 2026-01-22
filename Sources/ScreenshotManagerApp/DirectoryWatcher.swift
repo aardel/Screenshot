@@ -22,18 +22,11 @@ final class DirectoryWatcher {
             return
         }
 
-        // Create dispatch source - if this fails, we need to clean up the FD
-        guard let src = DispatchSource.makeFileSystemObjectSource(
+        let src = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fd,
             eventMask: [.write, .rename, .delete, .attrib, .extend, .link, .revoke],
             queue: DispatchQueue.global(qos: .utility)
-        ) as? DispatchSourceFileSystemObject else {
-            // Failed to create source - clean up FD
-            close(fd)
-            fd = -1
-            ErrorLogger.shared.warning("Failed to create file system event source for: \(url.path)")
-            return
-        }
+        )
 
         src.setEventHandler { [weak self] in
             self?.onChange()

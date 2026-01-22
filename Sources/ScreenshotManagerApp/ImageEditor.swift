@@ -70,11 +70,22 @@ struct ImageAnnotation: Identifiable {
 @MainActor
 final class ImageEditorState: ObservableObject {
     @Published var tool: ImageEditorTool = .pen
-    @Published var color: NSColor = .systemBlue
+    @Published var color: NSColor = .systemBlue {
+        didSet {
+            UserDefaults.standard.set(color.hexString, forKey: "editorSelectedColor")
+        }
+    }
     @Published var lineWidth: CGFloat = 4
     @Published var textValue: String = "Text"
     @Published var annotations: [ImageAnnotation] = []
     @Published var draftAnnotation: ImageAnnotation?
+    
+    init() {
+        if let hex = UserDefaults.standard.string(forKey: "editorSelectedColor"),
+           let savedColor = NSColor(hex: hex) {
+            self.color = savedColor
+        }
+    }
     @Published var cropRect: CGRect?
     @Published var notes: String = ""
 
@@ -190,10 +201,17 @@ final class ImageEditorState: ObservableObject {
     }
 
     private func strokeArrow(start: CGPoint, end: CGPoint, color: NSColor, lineWidth: CGFloat) {
-        strokeLine(start: start, end: end, color: color, lineWidth: lineWidth)
         let angle = atan2(end.y - start.y, end.x - start.x)
-        let arrowLength: CGFloat = 12 + lineWidth
-        let arrowAngle: CGFloat = .pi / 6
+        let arrowLength: CGFloat = 14 + lineWidth * 1.5
+        let arrowAngle: CGFloat = .pi / 7
+        
+        // Stop line at base of arrowhead
+        let lineEnd = CGPoint(
+            x: end.x - arrowLength * 0.7 * cos(angle),
+            y: end.y - arrowLength * 0.7 * sin(angle)
+        )
+        strokeLine(start: start, end: lineEnd, color: color, lineWidth: lineWidth)
+        
         let p1 = CGPoint(
             x: end.x - arrowLength * cos(angle - arrowAngle),
             y: end.y - arrowLength * sin(angle - arrowAngle)
@@ -202,15 +220,14 @@ final class ImageEditorState: ObservableObject {
             x: end.x - arrowLength * cos(angle + arrowAngle),
             y: end.y - arrowLength * sin(angle + arrowAngle)
         )
-        let path = NSBezierPath()
-        path.lineWidth = lineWidth
-        path.lineCapStyle = .round
-        path.move(to: end)
-        path.line(to: p1)
-        path.move(to: end)
-        path.line(to: p2)
-        color.setStroke()
-        path.stroke()
+        // Create filled triangle arrowhead
+        let arrowHead = NSBezierPath()
+        arrowHead.move(to: end)
+        arrowHead.line(to: p1)
+        arrowHead.line(to: p2)
+        arrowHead.close()
+        color.setFill()
+        arrowHead.fill()
     }
 
     private func strokeRect(rect: CGRect, color: NSColor, lineWidth: CGFloat) {
@@ -500,25 +517,33 @@ struct ImageEditorView: View {
     }
 
     private var editorToolbar: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 8) {
+        VStack(spacing: 12) {
+            HStack(spacing: 4) {
                 ForEach(ImageEditorTool.allCases) { tool in
                     Button {
                         editor.tool = tool
                     } label: {
                         Image(systemName: tool.systemImage)
-                            .foregroundColor(editor.tool == tool ? .white : .primary)
-                            .padding(6)
-                            .background(editor.tool == tool ? Color.accentColor : Color.clear)
-                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                            .font(.system(size: 16, weight: .medium))
+                            .frame(width: 36, height: 32)
                     }
+                    .buttonStyle(.plain)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(editor.tool == tool ? Color.accentColor : Color.clear)
+                    )
+                    .foregroundColor(editor.tool == tool ? .white : .primary)
                     .help(tool.label)
                 }
             }
+            .padding(6)
+            .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
             HStack(spacing: 12) {
                 // Simple color palette
                 HStack(spacing: 6) {
                     ForEach(presetColors, id: \.self) { color in
+                        let isSelected = editor.color.hexString == color.hexString
                         Button(action: {
                             editor.color = color
                         }) {
@@ -526,8 +551,14 @@ struct ImageEditorView: View {
                                 .fill(Color(color))
                                 .frame(width: 24, height: 24)
                                 .overlay(
-                                    Circle()
-                                        .stroke(editor.color == color ? Color.accentColor : Color.clear, lineWidth: 2)
+                                    Group {
+                                        if isSelected {
+                                            Circle()
+                                                .stroke(Color.black.opacity(0.5), lineWidth: 4)
+                                            Circle()
+                                                .stroke(Color.white, lineWidth: 2)
+                                        }
+                                    }
                                 )
                         }
                         .buttonStyle(.plain)
@@ -558,13 +589,16 @@ struct ImageEditorView: View {
                 Spacer()
 
                 Button("Reset") { editor.reset() }
+                    .actionButtonStyle()
                     .help("Remove all annotations and reset crop")
                 Button("Cancel") { onCancel() }
+                    .actionButtonStyle()
                     .help("Discard changes and close editor")
                 Button("Save") {
                     guard let rendered = editor.renderImage() else { return }
                     onSave(rendered, editor.notes)
                 }
+                .actionButtonStyle(isProminent: true)
                 .keyboardShortcut(.return, modifiers: [])
             }
             .padding(8)
@@ -713,8 +747,21 @@ struct ImageEditorView: View {
         case .arrow(let start, let end):
             let startPoint = mapImagePointToView(start, imageRect: imageRect)
             let endPoint = mapImagePointToView(end, imageRect: imageRect)
-            let path = arrowPath(start: startPoint, end: endPoint, lineWidth: annotation.lineWidth)
-            context.stroke(path, with: .color(Color(annotation.color)), lineWidth: annotation.lineWidth)
+            let angle = atan2(endPoint.y - startPoint.y, endPoint.x - startPoint.x)
+            let arrowLength = 14 + annotation.lineWidth * 1.5
+            // Stop line at base of arrowhead
+            let lineEnd = CGPoint(
+                x: endPoint.x - arrowLength * 0.7 * cos(angle),
+                y: endPoint.y - arrowLength * 0.7 * sin(angle)
+            )
+            // Draw line
+            context.stroke(Path { p in
+                p.move(to: startPoint)
+                p.addLine(to: lineEnd)
+            }, with: .color(Color(annotation.color)), lineWidth: annotation.lineWidth)
+            // Draw filled arrowhead
+            let arrowHead = arrowHeadPath(end: endPoint, start: startPoint, lineWidth: annotation.lineWidth)
+            context.fill(arrowHead, with: .color(Color(annotation.color)))
         case .rectangle(let rect):
             let viewRect = mapImageRectToView(rect, imageRect: imageRect)
             context.stroke(Path(viewRect), with: .color(Color(annotation.color)), lineWidth: annotation.lineWidth)
@@ -797,9 +844,16 @@ struct ImageEditorView: View {
         var path = Path()
         path.move(to: start)
         path.addLine(to: end)
+        // Add filled arrowhead
+        let headPath = arrowHeadPath(end: end, start: start, lineWidth: lineWidth)
+        path.addPath(headPath)
+        return path
+    }
+    
+    private func arrowHeadPath(end: CGPoint, start: CGPoint, lineWidth: CGFloat) -> Path {
         let angle = atan2(end.y - start.y, end.x - start.x)
-        let arrowLength = 12 + lineWidth
-        let arrowAngle: CGFloat = .pi / 6
+        let arrowLength = 14 + lineWidth * 1.5
+        let arrowAngle: CGFloat = .pi / 7
         let p1 = CGPoint(
             x: end.x - arrowLength * cos(angle - arrowAngle),
             y: end.y - arrowLength * sin(angle - arrowAngle)
@@ -808,10 +862,11 @@ struct ImageEditorView: View {
             x: end.x - arrowLength * cos(angle + arrowAngle),
             y: end.y - arrowLength * sin(angle + arrowAngle)
         )
+        var path = Path()
         path.move(to: end)
         path.addLine(to: p1)
-        path.move(to: end)
         path.addLine(to: p2)
+        path.closeSubpath()
         return path
     }
 
@@ -925,5 +980,34 @@ private final class LoupeNSView: NSView {
         NSColor.white.setStroke()
         clipPath.lineWidth = 3
         clipPath.stroke()
+    }
+}
+
+// MARK: - NSColor Hex Extensions
+
+extension NSColor {
+    var hexString: String {
+        guard let rgbColor = usingColorSpace(.sRGB) else { return "#007AFF" }
+        let r = Int(rgbColor.redComponent * 255)
+        let g = Int(rgbColor.greenComponent * 255)
+        let b = Int(rgbColor.blueComponent * 255)
+        return String(format: "#%02X%02X%02X", r, g, b)
+    }
+    
+    convenience init?(hex: String) {
+        var hexString = hex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if hexString.hasPrefix("#") {
+            hexString.removeFirst()
+        }
+        guard hexString.count == 6 else { return nil }
+        
+        var rgb: UInt64 = 0
+        Scanner(string: hexString).scanHexInt64(&rgb)
+        
+        let r = CGFloat((rgb & 0xFF0000) >> 16) / 255.0
+        let g = CGFloat((rgb & 0x00FF00) >> 8) / 255.0
+        let b = CGFloat(rgb & 0x0000FF) / 255.0
+        
+        self.init(red: r, green: g, blue: b, alpha: 1.0)
     }
 }

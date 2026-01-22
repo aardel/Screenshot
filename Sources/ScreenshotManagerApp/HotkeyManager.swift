@@ -35,6 +35,8 @@ final class HotkeyManager {
         )
         if status == noErr {
             hotkeys[id] = Hotkey(id: id, keyCode: keyCode, modifiers: modifiers, handler: handler)
+        } else {
+            ErrorLogger.shared.warning("Failed to register hotkey (id: \(id), keyCode: \(keyCode)) - it may be in use by another application")
         }
     }
 

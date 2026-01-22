@@ -71,7 +71,7 @@ For a complete list of resolved issues, see:
 - `../brain/45b2afbd-71db-4b0f-a652-e8c4bf897d92/walkthrough.md`
 - `../brain/45b2afbd-71db-4b0f-a652-e8c4bf897d92/issues_summary.md`
 
-**Summary**: 9 of 10 identified issues have been resolved, including:
+**Summary**: 11 of 12 identified issues have been resolved, including:
 - Centralized error logging
 - Metadata storage data loss prevention
 - Video thumbnail race conditions
@@ -79,6 +79,8 @@ For a complete list of resolved issues, see:
 - Deprecated API usage
 - Core error handling throughout the app
 - Loupe tool drag functionality (ImageEditor)
+- Hotkey registration failure logging (HotkeyManager)
+- Folder selection error handling (SettingsView)
 
 ---
 

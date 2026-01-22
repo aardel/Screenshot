@@ -5,7 +5,17 @@ import ImageIO
 import UniformTypeIdentifiers
 
 enum Thumbnailer {
+    // Simple in-memory thumbnail cache
+    private static let cache = NSCache<NSString, NSImage>()
+    private static func cacheKey(for url: URL, size: Int) -> NSString {
+        return NSString(string: "\(url.absoluteString)|\(size)")
+    }
+
     static func thumbnail(for url: URL, maxPixelSize: Int = 512) async -> NSImage? {
+        // Return cached if available
+        let key = cacheKey(for: url, size: maxPixelSize)
+        if let cached = cache.object(forKey: key) { return cached }
+
         // Check if it's a video file
         let item = ScreenshotItem(id: url, url: url, createdAt: Date())
         if item.isVideo {
@@ -17,6 +27,10 @@ enum Thumbnailer {
 
     /// Synchronous version for backwards compatibility
     static func thumbnailSync(for url: URL, maxPixelSize: Int = 512) -> NSImage? {
+        // Return cached if available
+        let key = cacheKey(for: url, size: maxPixelSize)
+        if let cached = cache.object(forKey: key) { return cached }
+
         let item = ScreenshotItem(id: url, url: url, createdAt: Date())
         if item.isVideo {
             return thumbnailForVideoSync(url: url, maxPixelSize: maxPixelSize)
@@ -33,7 +47,9 @@ enum Thumbnailer {
             kCGImageSourceThumbnailMaxPixelSize: maxPixelSize
         ]
         guard let cgThumb = CGImageSourceCreateThumbnailAtIndex(src, 0, options as CFDictionary) else { return nil }
-        return NSImage(cgImage: cgThumb, size: .zero)
+        let image = NSImage(cgImage: cgThumb, size: .zero)
+        cache.setObject(image, forKey: cacheKey(for: url, size: maxPixelSize))
+        return image
     }
     
     private static func thumbnailForVideo(url: URL, maxPixelSize: Int) async -> NSImage? {
@@ -42,12 +58,23 @@ enum Thumbnailer {
               FileManager.default.isReadableFile(atPath: url.path) else {
             return nil
         }
+        
+        // Overall timeout guard to avoid long hangs on corrupt/locked files
+        let overallTimeout: TimeInterval = 8.0
+        let startTime = Date()
+
+        var lastSize: Int64 = 0
+        var stableCount = 0
 
         // Wait for file to be fully written (especially important for just-recorded videos)
         // Check file size stability to ensure it's fully written
-        var lastSize: Int64 = 0
-        var stableCount = 0
-        for attempt in 0..<10 {
+        let maxSizeStabilizationAttempts = 10
+        for attempt in 0..<maxSizeStabilizationAttempts {
+            // Break out if we've exceeded our overall timeout
+            if Date().timeIntervalSince(startTime) > overallTimeout {
+                print("Thumbnailer: Aborting size stabilization due to overall timeout for \(url.lastPathComponent)")
+                break
+            }
             if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
                let size = attrs[.size] as? Int64 {
                 if size == lastSize && size > 0 {
@@ -64,13 +91,21 @@ enum Thumbnailer {
             }
             // Longer wait for newly created files
             let waitTime = attempt < 3 ? 300_000_000 : 200_000_000 // 0.3s first 3 attempts, then 0.2s
+            // Respect overall timeout
+            if Date().timeIntervalSince(startTime) > overallTimeout { break }
             try? await Task.sleep(nanoseconds: UInt64(waitTime))
         }
-
+        
         // Create asset and wait until tracks are available (file ready)
         var asset: AVURLAsset?
         var tracksReady = false
-        for attempt in 0..<6 {
+        let maxTrackLoadAttempts = 6
+        for attempt in 0..<maxTrackLoadAttempts {
+            // Abort if overall timeout exceeded
+            if Date().timeIntervalSince(startTime) > overallTimeout {
+                print("Thumbnailer: Aborting track load due to overall timeout for \(url.lastPathComponent)")
+                return nil
+            }
             let candidate = AVURLAsset(url: url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: false])
             do {
                 let tracks = try await candidate.load(.tracks)
@@ -80,12 +115,13 @@ enum Thumbnailer {
                     break
                 }
             } catch {
-                if attempt == 5 {
+                if attempt == maxTrackLoadAttempts - 1 {
                     print("Failed to load video tracks after \(attempt + 1) attempts: \(error.localizedDescription)")
                     return nil
                 }
             }
             // Wait before retry
+            if Date().timeIntervalSince(startTime) > overallTimeout { break }
             try? await Task.sleep(nanoseconds: 600_000_000) // 0.6 second
         }
         
@@ -99,6 +135,8 @@ enum Thumbnailer {
         imageGenerator.maximumSize = CGSize(width: CGFloat(maxPixelSize), height: CGFloat(maxPixelSize))
         imageGenerator.requestedTimeToleranceBefore = CMTime(seconds: 1.0, preferredTimescale: 600)
         imageGenerator.requestedTimeToleranceAfter = CMTime(seconds: 1.0, preferredTimescale: 600)
+        // Hint to generate actual first available frame quickly
+        imageGenerator.apertureMode = .encodedPixels
 
         // Get video duration using modern async API
         let durationSeconds: Double
@@ -128,12 +166,16 @@ enum Thumbnailer {
 
         do {
             let cgImage = try imageGenerator.copyCGImage(at: thumbnailTime, actualTime: nil)
-            return NSImage(cgImage: cgImage, size: .zero)
+            let img = NSImage(cgImage: cgImage, size: .zero)
+            cache.setObject(img, forKey: cacheKey(for: url, size: maxPixelSize))
+            return img
         } catch {
             // Fallback: try at time zero
             do {
                 let cgImage = try imageGenerator.copyCGImage(at: .zero, actualTime: nil)
-                return NSImage(cgImage: cgImage, size: .zero)
+                let img = NSImage(cgImage: cgImage, size: .zero)
+                cache.setObject(img, forKey: cacheKey(for: url, size: maxPixelSize))
+                return img
             } catch {
                 print("Failed to generate video thumbnail for \(url.lastPathComponent): \(error.localizedDescription)")
                 return nil
@@ -164,7 +206,9 @@ enum Thumbnailer {
         for time in times {
             do {
                 let cgImage = try imageGenerator.copyCGImage(at: time, actualTime: nil)
-                return NSImage(cgImage: cgImage, size: .zero)
+                let img = NSImage(cgImage: cgImage, size: .zero)
+                cache.setObject(img, forKey: cacheKey(for: url, size: maxPixelSize))
+                return img
             } catch {
                 continue
             }

@@ -123,7 +123,7 @@ struct SettingsView: View {
                 let data = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
                 settings.watchedFolderBookmark = data
             } catch {
-                // Ignore for now; we'll add user-visible error later.
+                ErrorLogger.shared.log(error, context: "Failed to save folder bookmark", showToUser: true)
             }
         }
     }
