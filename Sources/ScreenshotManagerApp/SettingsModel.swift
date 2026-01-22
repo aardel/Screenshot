@@ -18,6 +18,10 @@ final class SettingsModel: ObservableObject {
         didSet { save() }
     }
     
+    @Published var hasInitializedScreenshotFolder: Bool = false {
+        didSet { save() }
+    }
+    
     enum ThumbnailSize: Int, CaseIterable, Identifiable {
         case small = 0
         case medium = 1
@@ -91,6 +95,7 @@ final class SettingsModel: ObservableObject {
         if defaults.object(forKey: "copyToClipboardAfterCapture") != nil {
             copyToClipboardAfterCapture = defaults.bool(forKey: "copyToClipboardAfterCapture")
         }
+        hasInitializedScreenshotFolder = defaults.bool(forKey: "hasInitializedScreenshotFolder")
     }
 
     private func save() {
@@ -98,6 +103,7 @@ final class SettingsModel: ObservableObject {
         defaults.set(dateFilter.rawValue, forKey: "dateFilter")
         defaults.set(thumbnailSize.rawValue, forKey: "thumbnailSize")
         defaults.set(copyToClipboardAfterCapture, forKey: "copyToClipboardAfterCapture")
+        defaults.set(hasInitializedScreenshotFolder, forKey: "hasInitializedScreenshotFolder")
     }
 }
 

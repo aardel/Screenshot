@@ -119,12 +119,8 @@ struct SettingsView: View {
 
         if panel.runModal() == .OK, let url = panel.url {
             lastPickedFolder = url
-            do {
-                let data = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
-                settings.watchedFolderBookmark = data
-            } catch {
-                ErrorLogger.shared.log(error, context: "Failed to save folder bookmark", showToUser: true)
-            }
+            // Use folder manager to set both app and system screenshot location
+            ScreenshotFolderManager.setScreenshotFolder(url, settings: settings)
         }
     }
 }

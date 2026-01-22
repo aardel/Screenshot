@@ -34,6 +34,9 @@ struct ScreenshotManagerApp: App {
                     // Check permissions before starting
                     await ScreenshotManagerApp.checkAndRequestPermissions()
                     
+                    // Initialize default screenshot folder on first launch
+                    ScreenshotFolderManager.initializeOnFirstLaunch(settings: settings)
+                    
                     library.start()
                     // Ensure cursor is visible and window is key
                     DispatchQueue.main.async {
